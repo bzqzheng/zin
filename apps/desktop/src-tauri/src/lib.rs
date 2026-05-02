@@ -8,6 +8,7 @@ use tauri_plugin_shell::ShellExt;
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_HEALTH_TIMEOUT: Duration = Duration::from_secs(1);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const DAEMON_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 struct DaemonState {
     running: AtomicBool,
@@ -181,6 +182,7 @@ async fn cleanup_daemon(state: &DaemonState) {
     state.running.store(false, Ordering::SeqCst);
 
     let port = state.port.lock().unwrap().take();
+    let mut exited_gracefully = false;
     if let Some(port) = port {
         let url = format!("http://127.0.0.1:{}/shutdown", port);
         let request = reqwest::Client::new().post(&url).send();
@@ -189,10 +191,31 @@ async fn cleanup_daemon(state: &DaemonState) {
             Ok(Err(err)) => log::warn!("daemon graceful shutdown failed: {}", err),
             Err(_) => log::warn!("daemon graceful shutdown timed out"),
         }
+
+        exited_gracefully = wait_for_daemon_exit(port).await;
     }
 
     if let Some(child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
+        if !exited_gracefully {
+            log::warn!("daemon did not exit after shutdown request; force killing child");
+            let _ = child.kill();
+        }
+    }
+}
+
+async fn wait_for_daemon_exit(port: u16) -> bool {
+    let deadline = tokio::time::Instant::now() + DAEMON_SHUTDOWN_TIMEOUT;
+
+    loop {
+        if !daemon_is_healthy(port).await {
+            return true;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+
+        tokio::time::sleep(DAEMON_EXIT_POLL_INTERVAL).await;
     }
 }
 
