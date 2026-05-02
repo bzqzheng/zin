@@ -2,17 +2,19 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/bzqzheng/zin/services/daemon/httpapi/response"
 	"github.com/bzqzheng/zin/services/daemon/store"
 )
 
 type IssueHandler struct {
-	repo *store.IssueRepository
+	repo        *store.IssueRepository
+	projectRepo *store.ProjectRepository
 }
 
-func NewIssueHandler(repo *store.IssueRepository) *IssueHandler {
-	return &IssueHandler{repo: repo}
+func NewIssueHandler(repo *store.IssueRepository, projectRepo *store.ProjectRepository) *IssueHandler {
+	return &IssueHandler{repo: repo, projectRepo: projectRepo}
 }
 
 type createIssueRequest struct {
@@ -24,6 +26,7 @@ type createIssueRequest struct {
 }
 
 func (h *IssueHandler) List(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	projectID := r.PathValue("pid")
 	issues, err := h.repo.ListByProject(projectID)
 	if err != nil {
@@ -37,10 +40,21 @@ func (h *IssueHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *IssueHandler) Create(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	projectID := r.PathValue("pid")
 
+	project, err := h.projectRepo.GetByID(projectID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to verify project", err.Error())
+		return
+	}
+	if project == nil {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "project not found", "")
+		return
+	}
+
 	var req createIssueRequest
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -51,6 +65,10 @@ func (h *IssueHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	issue, err := h.repo.Create(projectID, req.Identifier, req.Title, req.Description, req.Status, req.Priority)
 	if err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY") {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid project reference", "")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to create issue", err.Error())
 		return
 	}
@@ -58,6 +76,7 @@ func (h *IssueHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *IssueHandler) Get(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	issue, err := h.repo.GetByID(id)
 	if err != nil {
@@ -81,6 +100,7 @@ type updateIssueRequest struct {
 }
 
 func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	issue, err := h.repo.GetByID(id)
 	if err != nil {
@@ -93,7 +113,7 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateIssueRequest
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -124,6 +144,7 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *IssueHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	issue, err := h.repo.GetByID(id)
 	if err != nil {
@@ -138,7 +159,7 @@ func (h *IssueHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -156,6 +177,7 @@ func (h *IssueHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *IssueHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	issue, err := h.repo.GetByID(id)
 	if err != nil {

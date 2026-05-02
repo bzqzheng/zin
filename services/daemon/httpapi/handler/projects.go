@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/bzqzheng/zin/services/daemon/httpapi/response"
 	"github.com/bzqzheng/zin/services/daemon/store"
@@ -21,6 +22,7 @@ type createProjectRequest struct {
 }
 
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	projects, err := h.repo.List()
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to list projects", err.Error())
@@ -33,8 +35,9 @@ func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req createProjectRequest
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -51,6 +54,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	project, err := h.repo.GetByID(id)
 	if err != nil {
@@ -70,6 +74,7 @@ type updateProjectRequest struct {
 }
 
 func (h *ProjectHandler) Update(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	project, err := h.repo.GetByID(id)
 	if err != nil {
@@ -82,7 +87,7 @@ func (h *ProjectHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateProjectRequest
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -101,6 +106,7 @@ func (h *ProjectHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	project, err := h.repo.GetByID(id)
 	if err != nil {
@@ -112,6 +118,10 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Delete(id); err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY") {
+			response.Error(w, http.StatusConflict, "CONFLICT", "cannot delete project with active issues", "")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to delete project", err.Error())
 		return
 	}

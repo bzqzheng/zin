@@ -70,8 +70,14 @@ func (r *IssueRepository) GetByID(id string) (*Issue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get issue: %w", err)
 	}
-	iss.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	iss.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	iss.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("get issue: %w", err)
+	}
+	iss.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get issue: %w", err)
+	}
 	return iss, nil
 }
 
@@ -126,13 +132,20 @@ func scanIssues(rows *sql.Rows) ([]*Issue, error) {
 	for rows.Next() {
 		iss := &Issue{}
 		var createdAt, updatedAt string
-		if err := rows.Scan(&iss.ID, &iss.ProjectID, &iss.Identifier, &iss.Title,
+		var err error
+		if err = rows.Scan(&iss.ID, &iss.ProjectID, &iss.Identifier, &iss.Title,
 			&iss.Description, &iss.Status, &iss.Priority,
 			&iss.AssigneeID, &iss.CreatorID, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan issue: %w", err)
 		}
-		iss.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		iss.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		iss.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("scan issue: %w", err)
+		}
+		iss.UpdatedAt, err = parseTime(updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("scan issue: %w", err)
+		}
 		issues = append(issues, iss)
 	}
 	return issues, nil

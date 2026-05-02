@@ -56,8 +56,14 @@ func (r *AgentRepository) GetByID(id string) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
 	}
-	a.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	a.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	a.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("get agent: %w", err)
+	}
+	a.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get agent: %w", err)
+	}
 	return a, nil
 }
 
@@ -75,8 +81,14 @@ func (r *AgentRepository) List() ([]*Agent, error) {
 		if err := rows.Scan(&a.ID, &a.Name, &a.Role, &a.Status, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
-		a.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		a.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		a.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("scan agent: %w", err)
+		}
+		a.UpdatedAt, err = parseTime(updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("scan agent: %w", err)
+		}
 		agents = append(agents, a)
 	}
 	return agents, nil

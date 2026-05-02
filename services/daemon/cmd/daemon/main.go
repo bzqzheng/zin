@@ -62,7 +62,7 @@ func main() {
 	router := httpapi.NewRouter(
 		healthHandler,
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(issueRepo),
+		handler.NewIssueHandler(issueRepo, projectRepo),
 		handler.NewAgentHandler(agentRepo),
 		shutdownCh,
 	)
@@ -93,5 +93,7 @@ func main() {
 	defer cancel()
 
 	srv.Shutdown(ctx)
-	pidfile.Remove(cfg.DataDir)
+	if err := pidfile.Remove(cfg.DataDir); err != nil {
+		log.Printf("remove pid file: %v", err)
+	}
 }

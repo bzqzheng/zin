@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/bzqzheng/zin/services/daemon/httpapi/response"
 	"github.com/bzqzheng/zin/services/daemon/store"
@@ -21,6 +22,7 @@ type createAgentRequest struct {
 }
 
 func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	agents, err := h.repo.List()
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to list agents", err.Error())
@@ -33,8 +35,9 @@ func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req createAgentRequest
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -51,6 +54,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	agent, err := h.repo.GetByID(id)
 	if err != nil {
@@ -71,6 +75,7 @@ type updateAgentRequest struct {
 }
 
 func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	agent, err := h.repo.GetByID(id)
 	if err != nil {
@@ -83,7 +88,7 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateAgentRequest
-	if err := 	response.DecodeJSON(r, &req); err != nil {
+	if err := response.DecodeJSON(r, &req); err != nil {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
@@ -105,6 +110,7 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	agent, err := h.repo.GetByID(id)
 	if err != nil {
@@ -116,6 +122,10 @@ func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Delete(id); err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY") {
+			response.Error(w, http.StatusConflict, "CONFLICT", "cannot delete agent with active references", "")
+			return
+		}
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to delete agent", err.Error())
 		return
 	}

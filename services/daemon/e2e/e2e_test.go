@@ -39,10 +39,22 @@ func TestE2E(t *testing.T) {
 		cmd.Wait()
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	var port string
+	deadline := time.After(5 * time.Second)
+	for port == "" {
+		select {
+		case <-deadline:
+			t.Fatalf("daemon did not emit port within 5s\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+		default:
+		}
+		output := stdout.String()
+		if idx := strings.Index(output, "\n"); idx != -1 {
+			port = strings.TrimSpace(output[:idx])
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
-	portStr := strings.TrimSpace(stdout.String())
-	port := strings.TrimSpace(portStr)
 	if port == "" {
 		t.Fatalf("no port output from daemon\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 	}

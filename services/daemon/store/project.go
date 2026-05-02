@@ -55,8 +55,14 @@ func (r *ProjectRepository) GetByID(id string) (*Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
 	}
-	p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	p.CreatedAt, err = parseTime(createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("get project: %w", err)
+	}
+	p.UpdatedAt, err = parseTime(updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get project: %w", err)
+	}
 	return p, nil
 }
 
@@ -74,8 +80,14 @@ func (r *ProjectRepository) List() ([]*Project, error) {
 		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
-		p.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		p.CreatedAt, err = parseTime(createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("list projects: %w", err)
+		}
+		p.UpdatedAt, err = parseTime(updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("list projects: %w", err)
+		}
 		projects = append(projects, p)
 	}
 	return projects, nil
