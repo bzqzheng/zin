@@ -21,24 +21,33 @@ import (
 )
 
 func main() {
-	cfg := config.Parse()
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	cfg, err := config.Parse()
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
 
 	if err := pidfile.CleanupStale(cfg.DataDir); err != nil {
-		log.Fatalf("cleanup stale pid: %v", err)
+		return fmt.Errorf("cleanup stale pid: %w", err)
 	}
 
 	database, err := db.Open(cfg.DataDir)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer database.Close()
 
 	if err := db.IntegrityCheck(database); err != nil {
-		log.Fatalf("integrity check: %v", err)
+		return fmt.Errorf("integrity check: %w", err)
 	}
 
 	if err := migration.Run(database); err != nil {
-		log.Fatalf("run migrations: %v", err)
+		return fmt.Errorf("run migrations: %w", err)
 	}
 
 	projectRepo := store.NewProjectRepository(database)
@@ -47,15 +56,21 @@ func main() {
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		return fmt.Errorf("listen: %w", err)
 	}
+	defer listener.Close()
 
 	port := listener.Addr().(*net.TCPAddr).Port
 	fmt.Printf("%d\n", port)
 
 	if err := pidfile.Write(cfg.DataDir); err != nil {
-		log.Fatalf("write pid file: %v", err)
+		return fmt.Errorf("write pid file: %w", err)
 	}
+	defer func() {
+		if err := pidfile.Remove(cfg.DataDir); err != nil {
+			log.Printf("remove pid file: %v", err)
+		}
+	}()
 
 	shutdownCh := make(chan struct{}, 1)
 	healthHandler := handler.NewHealthHandler(database, cfg, port)
@@ -75,25 +90,36 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	serveErrCh := make(chan error, 1)
 
 	go func() {
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("serve: %v", err)
+			serveErrCh <- err
 		}
 	}()
 
+	var serveErr error
 	select {
 	case sig := <-sigCh:
 		log.Printf("received signal %v, shutting down", sig)
 	case <-shutdownCh:
 		log.Printf("received shutdown request via API, shutting down")
+	case serveErr = <-serveErrCh:
+		log.Printf("server failed, shutting down: %v", serveErr)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	srv.Shutdown(ctx)
-	if err := pidfile.Remove(cfg.DataDir); err != nil {
-		log.Printf("remove pid file: %v", err)
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("shutdown server: %v", err)
 	}
+
+	if serveErr != nil {
+		return fmt.Errorf("serve: %w", serveErr)
+	}
+
+	return nil
 }
