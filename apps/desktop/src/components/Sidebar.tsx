@@ -6,16 +6,13 @@ export default function Sidebar() {
   ]
 
   const issues = [
-    { id: 'ZIN-1', title: 'Project scaffold & monorepo setup', priority: 'high' },
-    { id: 'ZIN-2', title: 'Go daemon foundation', priority: 'high' },
-    { id: 'ZIN-3', title: 'SQLite schema & migrations', priority: 'high' },
-    { id: 'ZIN-4', title: 'Issue CRUD API', priority: 'medium' },
-    { id: 'ZIN-5', title: 'PID file lifecycle', priority: 'medium' },
-    { id: 'ZIN-6', title: 'Daemon start/stop control', priority: 'medium' },
-    { id: 'ZIN-7', title: 'End-to-end integration smoke test', priority: 'high' },
-    { id: 'ZIN-8', title: 'Tauri frontend scaffold', priority: 'high' },
-    { id: 'ZIN-9', title: 'Agent & project CRUD API', priority: 'medium' },
-    { id: 'ZIN-10', title: 'Agent Sandbox Docker scaffold', priority: 'medium' },
+    { id: 'ISSUE-1', title: 'Add real-time collaboration to docs', priority: 'high' },
+    { id: 'ISSUE-2', title: 'Improve agent memory retrieval', priority: 'high' },
+    { id: 'ISSUE-3', title: 'Design channel sidebar', priority: 'high' },
+    { id: 'ISSUE-4', title: 'Add dark mode toggle', priority: 'medium' },
+    { id: 'ISSUE-5', title: 'Write onboarding guide', priority: 'medium' },
+    { id: 'ISSUE-6', title: 'Optimize daemon startup time', priority: 'medium' },
+    { id: 'ISSUE-7', title: 'Add keyboard shortcuts', priority: 'low' },
   ]
 
   const priorityColor = (p: string) =>

@@ -5,7 +5,7 @@ export default function IssueDetail() {
         <div className="mb-6">
           <div className="flex items-center gap-3 mb-2">
             <span className="text-xs font-mono text-zinc-500 bg-zinc-900 px-2 py-0.5 rounded">
-              ZIN-8
+              ISSUE-2
             </span>
             <span className="text-xs font-medium text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">
               High
@@ -15,7 +15,7 @@ export default function IssueDetail() {
             </span>
           </div>
           <h2 className="text-xl font-semibold text-zinc-100">
-            Tauri Frontend Scaffold
+            Improve Agent Memory Retrieval
           </h2>
           <p className="text-sm text-zinc-500 mt-1">
             Created by Trinity · May 2, 2026

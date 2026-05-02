@@ -10,14 +10,14 @@ describe('App', () => {
     expect(screen.getByText('Agent Workspace')).toBeVisible()
     expect(screen.getByText('Projects')).toBeVisible()
     expect(screen.getByText('Issues')).toBeVisible()
-    expect(screen.getByText('Tauri Frontend Scaffold')).toBeVisible()
+    expect(screen.getByText('Improve Agent Memory Retrieval')).toBeVisible()
     expect(screen.getByText('Timeline')).toBeVisible()
     expect(screen.getAllByText('Trinity').length).toBeGreaterThanOrEqual(2)
   })
 
   it('renders the sidebar with issue list', () => {
     render(<App />)
-    expect(screen.getAllByText(/ZIN-\d/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/ISSUE-\d/).length).toBeGreaterThan(0)
   })
 
   it('renders timeline events', () => {
