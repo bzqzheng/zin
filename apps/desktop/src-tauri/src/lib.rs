@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+
+const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct DaemonState {
     running: AtomicBool,
@@ -37,60 +41,82 @@ async fn start_daemon(
         .to_string_lossy()
         .to_string();
 
-    let (mut rx, child) = app
-        .shell()
-        .sidecar("daemon")
-        .map_err(|e| format!("sidecar error: {}", e))?
+    if state
+        .running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        if let Some(info) = current_daemon_info(&state) {
+            return Ok(info);
+        }
+
+        return Err("daemon startup already in progress".to_string());
+    }
+
+    let command = match app.shell().sidecar("daemon") {
+        Ok(command) => command,
+        Err(err) => {
+            state.running.store(false, Ordering::SeqCst);
+            return Err(format!("sidecar error: {}", err));
+        }
+    };
+
+    let (mut rx, child) = match command
         .args(["--port", "0", "--data-dir", &data_dir])
         .spawn()
-        .map_err(|e| format!("daemon spawn: {}", e))?;
+    {
+        Ok(spawned) => spawned,
+        Err(err) => {
+            state.running.store(false, Ordering::SeqCst);
+            return Err(format!("daemon spawn: {}", err));
+        }
+    };
 
     log::info!("daemon spawned, pid: {}", child.pid());
+    state.child.lock().unwrap().replace(child);
 
-    let mut port: u16 = 0;
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(line) => {
-                let text = String::from_utf8_lossy(&line);
-                log::info!("daemon stdout: {}", text);
-                if port == 0 {
-                    if let Ok(p) = text.trim().parse::<u16>() {
-                        port = p;
-                        break;
+    let port = match tokio::time::timeout(DAEMON_STARTUP_TIMEOUT, async {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    log::info!("daemon stdout: {}", text);
+                    if let Ok(port) = text.trim().parse::<u16>() {
+                        return Ok(port);
                     }
                 }
+                CommandEvent::Stderr(line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    log::warn!("daemon stderr: {}", text);
+                }
+                CommandEvent::Terminated(status) => {
+                    log::error!("daemon exited early: {:?}", status);
+                    return Err(format!("daemon exited early: {:?}", status));
+                }
+                _ => {}
             }
-            CommandEvent::Stderr(line) => {
-                let text = String::from_utf8_lossy(&line);
-                log::warn!("daemon stderr: {}", text);
-            }
-            CommandEvent::Terminated(status) => {
-                log::error!("daemon exited early: {:?}", status);
-                return Err(format!("daemon exited early: {:?}", status));
-            }
-            _ => {}
         }
-    }
 
-    if port == 0 {
-        return Err("daemon did not report port".to_string());
-    }
+        Err("daemon did not report port".to_string())
+    })
+    .await
+    {
+        Ok(Ok(port)) => port,
+        Ok(Err(err)) => {
+            cleanup_daemon(&state).await;
+            return Err(err);
+        }
+        Err(_) => {
+            cleanup_daemon(&state).await;
+            return Err("daemon startup timed out".to_string());
+        }
+    };
 
     state.port.lock().unwrap().replace(port);
-    state.child.lock().unwrap().replace(child);
-    state.running.store(true, Ordering::SeqCst);
 
     log::info!("daemon started on port {}", port);
 
-    let pid = state
-        .child
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|c| c.pid())
-        .unwrap_or(0);
-
-    Ok(DaemonInfo { port, pid })
+    current_daemon_info(&state).ok_or("daemon child missing after startup".to_string())
 }
 
 #[tauri::command]
@@ -112,19 +138,34 @@ async fn check_health(state: tauri::State<'_, DaemonState>) -> Result<HealthStat
 
 #[tauri::command]
 async fn shutdown_daemon(state: tauri::State<'_, DaemonState>) -> Result<(), String> {
+    cleanup_daemon(&state).await;
+    Ok(())
+}
+
+fn current_daemon_info(state: &DaemonState) -> Option<DaemonInfo> {
+    let port = state.port.lock().unwrap().as_ref().copied()?;
+    let pid = state.child.lock().unwrap().as_ref().map(|c| c.pid())?;
+
+    Some(DaemonInfo { port, pid })
+}
+
+async fn cleanup_daemon(state: &DaemonState) {
     state.running.store(false, Ordering::SeqCst);
 
     let port = state.port.lock().unwrap().take();
     if let Some(port) = port {
         let url = format!("http://127.0.0.1:{}/shutdown", port);
-        let _ = reqwest::Client::new().post(&url).send().await;
+        let request = reqwest::Client::new().post(&url).send();
+        match tokio::time::timeout(DAEMON_SHUTDOWN_TIMEOUT, request).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => log::warn!("daemon graceful shutdown failed: {}", err),
+            Err(_) => log::warn!("daemon graceful shutdown timed out"),
+        }
     }
 
     if let Some(child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
     }
-
-    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -151,6 +192,13 @@ pub fn run() {
             check_health,
             shutdown_daemon,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. } => {
+                let state = app_handle.state::<DaemonState>();
+                tauri::async_runtime::block_on(cleanup_daemon(&state));
+            }
+            _ => {}
+        });
 }
