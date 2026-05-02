@@ -92,7 +92,7 @@ func TestIssueCRUD(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	issue, err := ir.Create(project.ID, "ZIN-1", "First Issue", "Description", "todo", "high")
+	issue, err := ir.Create(project.ID, "ISSUE-1", "First Issue", "Description", "todo", "high")
 	if err != nil {
 		t.Fatalf("create issue: %v", err)
 	}

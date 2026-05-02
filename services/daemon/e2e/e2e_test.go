@@ -100,7 +100,7 @@ func TestE2E(t *testing.T) {
 
 	t.Run("create issue", func(t *testing.T) {
 		body := map[string]string{
-			"identifier":  "ZIN-1",
+			"identifier":  "ISSUE-1",
 			"title":       "E2E Test Issue",
 			"description": "Created during E2E test",
 			"priority":    "high",

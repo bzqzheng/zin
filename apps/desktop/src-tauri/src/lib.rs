@@ -82,7 +82,13 @@ async fn start_daemon(
 
     log::info!("daemon started on port {}", port);
 
-    let pid = state.child.lock().unwrap().as_ref().map(|c| c.pid()).unwrap_or(0);
+    let pid = state
+        .child
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|c| c.pid())
+        .unwrap_or(0);
 
     Ok(DaemonInfo { port, pid })
 }
