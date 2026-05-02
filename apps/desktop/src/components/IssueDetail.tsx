@@ -18,7 +18,7 @@ export default function IssueDetail() {
             Improve Agent Memory Retrieval
           </h2>
           <p className="text-sm text-zinc-500 mt-1">
-            Created by Trinity · May 2, 2026
+            Created by Assistant · May 2, 2026
           </p>
         </div>
 
@@ -45,11 +45,11 @@ export default function IssueDetail() {
           <div className="space-y-3">
             <div className="flex gap-3">
               <div className="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center text-[10px] text-zinc-400 shrink-0">
-                T
+                A
               </div>
               <div>
                 <p className="text-sm">
-                  <span className="text-zinc-300 font-medium">Trinity</span>{' '}
+                  <span className="text-zinc-300 font-medium">Assistant</span>{' '}
                   <span className="text-zinc-500">created this issue</span>
                 </p>
                 <p className="text-xs text-zinc-600">2 hours ago</p>
@@ -57,12 +57,12 @@ export default function IssueDetail() {
             </div>
             <div className="flex gap-3">
               <div className="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center text-[10px] text-zinc-400 shrink-0">
-                M
+                C
               </div>
               <div>
                 <p className="text-sm">
-                  <span className="text-zinc-300 font-medium">Morpheus</span>{' '}
-                  <span className="text-zinc-500">assigned to Trinity</span>
+                  <span className="text-zinc-300 font-medium">Coordinator</span>{' '}
+                  <span className="text-zinc-500">assigned to Assistant</span>
                 </p>
                 <p className="text-xs text-zinc-600">1 hour ago</p>
               </div>

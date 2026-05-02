@@ -62,7 +62,7 @@ export default function Sidebar() {
 
       <div className="px-4 py-3 border-t border-zinc-800">
         <div className="text-xs text-zinc-500">
-          <span className="text-zinc-400 font-medium">Trinity</span> · online
+          <span className="text-zinc-400 font-medium">Assistant</span> · online
         </div>
       </div>
     </aside>

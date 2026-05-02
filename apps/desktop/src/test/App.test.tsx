@@ -12,7 +12,7 @@ describe('App', () => {
     expect(screen.getByText('Issues')).toBeVisible()
     expect(screen.getByText('Improve Agent Memory Retrieval')).toBeVisible()
     expect(screen.getByText('Timeline')).toBeVisible()
-    expect(screen.getAllByText('Trinity').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('Assistant').length).toBeGreaterThanOrEqual(2)
   })
 
   it('renders the sidebar with issue list', () => {
@@ -23,7 +23,7 @@ describe('App', () => {
   it('renders timeline events', () => {
     render(<App />)
     expect(screen.getByText('Issue created')).toBeVisible()
-    expect(screen.getByText('Assigned to Trinity')).toBeVisible()
+    expect(screen.getByText('Assigned to Assistant')).toBeVisible()
     expect(screen.getByText('Status: In Progress')).toBeVisible()
   })
 })

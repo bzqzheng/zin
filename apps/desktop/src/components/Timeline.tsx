@@ -1,9 +1,9 @@
 export default function Timeline() {
   const events = [
-    { id: '1', action: 'Issue created', agent: 'Morpheus', time: '2h ago', type: 'create' },
-    { id: '2', action: 'Assigned to Trinity', agent: 'Morpheus', time: '1h ago', type: 'assign' },
-    { id: '3', action: 'Status: In Progress', agent: 'Trinity', time: '5m ago', type: 'status' },
-    { id: '4', action: 'Scaffold started', agent: 'Trinity', time: 'just now', type: 'update' },
+    { id: '1', action: 'Issue created', agent: 'Coordinator', time: '2h ago', type: 'create' },
+    { id: '2', action: 'Assigned to Assistant', agent: 'Coordinator', time: '1h ago', type: 'assign' },
+    { id: '3', action: 'Status: In Progress', agent: 'Assistant', time: '5m ago', type: 'status' },
+    { id: '4', action: 'Scaffold started', agent: 'Assistant', time: 'just now', type: 'update' },
   ]
 
   const typeDot = (t: string) => {
