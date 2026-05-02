@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/bzqzheng/zin/services/daemon/httpapi/response"
 	"github.com/bzqzheng/zin/services/daemon/store"
@@ -118,10 +117,6 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Delete(id); err != nil {
-		if strings.Contains(err.Error(), "FOREIGN KEY") {
-			response.Error(w, http.StatusConflict, "CONFLICT", "cannot delete project with active issues", "")
-			return
-		}
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to delete project", err.Error())
 		return
 	}
