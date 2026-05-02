@@ -28,6 +28,14 @@ func TestRun(t *testing.T) {
 	if tableCount != 3 {
 		t.Errorf("expected 3 tables, got %d", tableCount)
 	}
+
+	var positionIndexCount int
+	if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = 'idx_issues_project_position'").Scan(&positionIndexCount); err != nil {
+		t.Fatalf("verify position index: %v", err)
+	}
+	if positionIndexCount != 1 {
+		t.Errorf("expected issue position index, got %d", positionIndexCount)
+	}
 }
 
 func TestRunIdempotent(t *testing.T) {
@@ -139,6 +147,35 @@ VALUES
 	}
 	if created.Identifier != "ISSUE-3" || created.Position != 3 {
 		t.Fatalf("expected next issue ISSUE-3/3, got %s/%d", created.Identifier, created.Position)
+	}
+
+	if err := issueRepo.Delete("issue-1"); err != nil {
+		t.Fatalf("delete issue before migration rerun: %v", err)
+	}
+	if err := migration.Run(database); err != nil {
+		t.Fatalf("rerun after issue delete: %v", err)
+	}
+
+	second, err := issueRepo.GetByID("issue-2")
+	if err != nil {
+		t.Fatalf("get second issue after rerun: %v", err)
+	}
+	if second == nil {
+		t.Fatal("expected second issue after rerun")
+	}
+	if second.Identifier != "ISSUE-2" || second.Position != 2 {
+		t.Fatalf("expected second issue identifier/position to remain ISSUE-2/2, got %s/%d", second.Identifier, second.Position)
+	}
+
+	third, err := issueRepo.GetByID(created.ID)
+	if err != nil {
+		t.Fatalf("get third issue after rerun: %v", err)
+	}
+	if third == nil {
+		t.Fatal("expected third issue after rerun")
+	}
+	if third.Identifier != "ISSUE-3" || third.Position != 3 {
+		t.Fatalf("expected third issue identifier/position to remain ISSUE-3/3, got %s/%d", third.Identifier, third.Position)
 	}
 
 	if err := projectRepo.Delete("project-1"); err != nil {
