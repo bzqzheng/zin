@@ -6,6 +6,7 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_HEALTH_TIMEOUT: Duration = Duration::from_secs(1);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct DaemonState {
@@ -41,13 +42,23 @@ async fn start_daemon(
         .to_string_lossy()
         .to_string();
 
-    if state
-        .running
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    loop {
+        if state
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            break;
+        }
+
         if let Some(info) = current_daemon_info(&state) {
-            return Ok(info);
+            if daemon_is_healthy(info.port).await {
+                return Ok(info);
+            }
+
+            log::warn!("cached daemon is not healthy; cleaning up before restart");
+            cleanup_daemon(&state).await;
+            continue;
         }
 
         return Err("daemon startup already in progress".to_string());
@@ -147,6 +158,23 @@ fn current_daemon_info(state: &DaemonState) -> Option<DaemonInfo> {
     let pid = state.child.lock().unwrap().as_ref().map(|c| c.pid())?;
 
     Some(DaemonInfo { port, pid })
+}
+
+async fn daemon_is_healthy(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}/health", port);
+    let request = reqwest::Client::new().get(&url).send();
+
+    match tokio::time::timeout(DAEMON_HEALTH_TIMEOUT, request).await {
+        Ok(Ok(resp)) => resp.status().is_success(),
+        Ok(Err(err)) => {
+            log::warn!("daemon health probe failed: {}", err);
+            false
+        }
+        Err(_) => {
+            log::warn!("daemon health probe timed out");
+            false
+        }
+    }
 }
 
 async fn cleanup_daemon(state: &DaemonState) {
