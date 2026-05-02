@@ -80,3 +80,4 @@ checksums.txt
 .eslintcache
 .stylelintcache
 
+/services/daemon/cmd/daemon/daemon-*

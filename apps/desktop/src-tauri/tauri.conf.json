@@ -47,7 +47,7 @@
       "sidecar": true,
       "scope": [
         {
-          "name": "services/daemon/cmd/daemon/daemon",
+          "name": "daemon",
           "sidecar": true
         }
       ]
