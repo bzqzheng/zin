@@ -226,7 +226,7 @@ func TestAgentCRUD(t *testing.T) {
 	_, _, ar, cleanup := setupStore(t)
 	defer cleanup()
 
-	agent, err := ar.Create("Trinity", "craftsperson")
+	agent, err := ar.Create("Build Agent", "craftsperson")
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
@@ -241,8 +241,8 @@ func TestAgentCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get agent: %v", err)
 	}
-	if got.Name != "Trinity" {
-		t.Errorf("expected name 'Trinity', got '%s'", got.Name)
+	if got.Name != "Build Agent" {
+		t.Errorf("expected name 'Build Agent', got '%s'", got.Name)
 	}
 
 	agent.Name = "Oracle"
