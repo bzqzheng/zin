@@ -92,12 +92,18 @@ func TestIssueCRUD(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	issue, err := ir.Create(project.ID, "ISSUE-1", "First Issue", "Description", "todo", "high")
+	issue, err := ir.Create(project.ID, "First Issue", "Description", "todo", "high")
 	if err != nil {
 		t.Fatalf("create issue: %v", err)
 	}
 	if issue.ID == "" {
 		t.Error("expected non-empty issue ID")
+	}
+	if issue.Identifier != "ISSUE-1" {
+		t.Errorf("expected generated identifier 'ISSUE-1', got '%s'", issue.Identifier)
+	}
+	if issue.Position != 1 {
+		t.Errorf("expected generated position 1, got %d", issue.Position)
 	}
 
 	got, err := ir.GetByID(issue.ID)
@@ -108,7 +114,7 @@ func TestIssueCRUD(t *testing.T) {
 		t.Errorf("expected title 'First Issue', got '%s'", got.Title)
 	}
 
-	issues, err := ir.ListByProject(project.ID)
+	issues, err := ir.ListByProject(project.ID, store.IssueFilters{})
 	if err != nil {
 		t.Fatalf("list issues: %v", err)
 	}
@@ -142,9 +148,77 @@ func TestIssueCRUD(t *testing.T) {
 		t.Fatalf("delete issue: %v", err)
 	}
 
-	issues, _ = ir.ListByProject(project.ID)
+	issues, _ = ir.ListByProject(project.ID, store.IssueFilters{})
 	if len(issues) != 0 {
 		t.Errorf("expected 0 issues after delete, got %d", len(issues))
+	}
+}
+
+func TestIssueFiltersGeneratedFieldsAndCascade(t *testing.T) {
+	pr, ir, _, cleanup := setupStore(t)
+	defer cleanup()
+
+	project, err := pr.Create("Filtered Project", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	first, err := ir.Create(project.ID, "First", "", "todo", "high")
+	if err != nil {
+		t.Fatalf("create first issue: %v", err)
+	}
+	second, err := ir.Create(project.ID, "Second", "", "in_progress", "high")
+	if err != nil {
+		t.Fatalf("create second issue: %v", err)
+	}
+	third, err := ir.Create(project.ID, "Third", "", "todo", "low")
+	if err != nil {
+		t.Fatalf("create third issue: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		issue      *store.Issue
+		identifier string
+		position   int
+	}{
+		{name: "first", issue: first, identifier: "ISSUE-1", position: 1},
+		{name: "second", issue: second, identifier: "ISSUE-2", position: 2},
+		{name: "third", issue: third, identifier: "ISSUE-3", position: 3},
+	} {
+		if tc.issue.Identifier != tc.identifier {
+			t.Errorf("%s identifier: expected %s, got %s", tc.name, tc.identifier, tc.issue.Identifier)
+		}
+		if tc.issue.Position != tc.position {
+			t.Errorf("%s position: expected %d, got %d", tc.name, tc.position, tc.issue.Position)
+		}
+	}
+
+	filtered, err := ir.ListByProject(project.ID, store.IssueFilters{Status: "todo", Priority: "high"})
+	if err != nil {
+		t.Fatalf("filter issues: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != first.ID {
+		t.Fatalf("expected only first todo/high issue, got %#v", filtered)
+	}
+
+	statusOnly, err := ir.ListByProject(project.ID, store.IssueFilters{Status: "todo"})
+	if err != nil {
+		t.Fatalf("filter by status: %v", err)
+	}
+	if len(statusOnly) != 2 || statusOnly[0].ID != first.ID || statusOnly[1].ID != third.ID {
+		t.Fatalf("expected todo issues in position order, got %#v", statusOnly)
+	}
+
+	if err := pr.Delete(project.ID); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+	remaining, err := ir.ListByProject(project.ID, store.IssueFilters{})
+	if err != nil {
+		t.Fatalf("list after cascade delete: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected cascade delete to remove issues, got %d", len(remaining))
 	}
 }
 

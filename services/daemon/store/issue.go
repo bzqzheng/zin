@@ -16,7 +16,12 @@ func NewIssueRepository(db *sql.DB) *IssueRepository {
 	return &IssueRepository{db: db}
 }
 
-func (r *IssueRepository) Create(projectID, identifier, title, description, status, priority string) (*Issue, error) {
+type IssueFilters struct {
+	Status   string
+	Priority string
+}
+
+func (r *IssueRepository) Create(projectID, title, description, status, priority string) (*Issue, error) {
 	uid, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generate uuid: %w", err)
@@ -29,11 +34,27 @@ func (r *IssueRepository) Create(projectID, identifier, title, description, stat
 		priority = "medium"
 	}
 
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin create issue: %w", err)
+	}
+	defer tx.Rollback()
+
+	var position int
+	if err := tx.QueryRow(
+		"SELECT COALESCE(MAX(position), 0) + 1 FROM issues WHERE project_id = ?",
+		projectID,
+	).Scan(&position); err != nil {
+		return nil, fmt.Errorf("next issue position: %w", err)
+	}
+
+	identifier := fmt.Sprintf("ISSUE-%d", position)
 	now := time.Now().UTC()
 	iss := &Issue{
 		ID:          uid.String(),
 		ProjectID:   projectID,
 		Identifier:  identifier,
+		Position:    position,
 		Title:       title,
 		Description: description,
 		Status:      status,
@@ -42,14 +63,17 @@ func (r *IssueRepository) Create(projectID, identifier, title, description, stat
 		UpdatedAt:   now,
 	}
 
-	_, err = r.db.Exec(
-		`INSERT INTO issues (id, project_id, identifier, title, description, status, priority, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		iss.ID, iss.ProjectID, iss.Identifier, iss.Title, iss.Description,
+	_, err = tx.Exec(
+		`INSERT INTO issues (id, project_id, identifier, position, title, description, status, priority, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		iss.ID, iss.ProjectID, iss.Identifier, iss.Position, iss.Title, iss.Description,
 		iss.Status, iss.Priority, iss.CreatedAt.Format(time.RFC3339), iss.UpdatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert issue: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit create issue: %w", err)
 	}
 
 	return iss, nil
@@ -59,10 +83,10 @@ func (r *IssueRepository) GetByID(id string) (*Issue, error) {
 	iss := &Issue{}
 	var createdAt, updatedAt string
 	err := r.db.QueryRow(
-		`SELECT id, project_id, identifier, title, description, status, priority,
+		`SELECT id, project_id, identifier, position, title, description, status, priority,
 		        assignee_id, creator_id, created_at, updated_at
 		 FROM issues WHERE id = ?`, id,
-	).Scan(&iss.ID, &iss.ProjectID, &iss.Identifier, &iss.Title, &iss.Description,
+	).Scan(&iss.ID, &iss.ProjectID, &iss.Identifier, &iss.Position, &iss.Title, &iss.Description,
 		&iss.Status, &iss.Priority, &iss.AssigneeID, &iss.CreatorID, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -81,12 +105,22 @@ func (r *IssueRepository) GetByID(id string) (*Issue, error) {
 	return iss, nil
 }
 
-func (r *IssueRepository) ListByProject(projectID string) ([]*Issue, error) {
-	rows, err := r.db.Query(
-		`SELECT id, project_id, identifier, title, description, status, priority,
-		        assignee_id, creator_id, created_at, updated_at
-		 FROM issues WHERE project_id = ? ORDER BY created_at DESC`, projectID,
-	)
+func (r *IssueRepository) ListByProject(projectID string, filters IssueFilters) ([]*Issue, error) {
+	query := `SELECT id, project_id, identifier, position, title, description, status, priority,
+	                 assignee_id, creator_id, created_at, updated_at
+	          FROM issues WHERE project_id = ?`
+	args := []interface{}{projectID}
+	if filters.Status != "" {
+		query += " AND status = ?"
+		args = append(args, filters.Status)
+	}
+	if filters.Priority != "" {
+		query += " AND priority = ?"
+		args = append(args, filters.Priority)
+	}
+	query += " ORDER BY position ASC"
+
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
 	}
@@ -133,7 +167,7 @@ func scanIssues(rows *sql.Rows) ([]*Issue, error) {
 		iss := &Issue{}
 		var createdAt, updatedAt string
 		var err error
-		if err = rows.Scan(&iss.ID, &iss.ProjectID, &iss.Identifier, &iss.Title,
+		if err = rows.Scan(&iss.ID, &iss.ProjectID, &iss.Identifier, &iss.Position, &iss.Title,
 			&iss.Description, &iss.Status, &iss.Priority,
 			&iss.AssigneeID, &iss.CreatorID, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan issue: %w", err)

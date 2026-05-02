@@ -19,6 +19,7 @@ func Open(dataDir string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
