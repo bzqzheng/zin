@@ -12,7 +12,7 @@ type ErrorResponse struct {
 type ErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	Details string `json:"details,omitempty"`
+	Details string `json:"details"`
 }
 
 func JSON(w http.ResponseWriter, status int, v interface{}) {

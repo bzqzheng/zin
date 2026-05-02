@@ -18,7 +18,6 @@ func NewIssueHandler(repo *store.IssueRepository, projectRepo *store.ProjectRepo
 }
 
 type createIssueRequest struct {
-	Identifier  string `json:"identifier"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Status      string `json:"status"`
@@ -28,7 +27,10 @@ type createIssueRequest struct {
 func (h *IssueHandler) List(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	projectID := r.PathValue("pid")
-	issues, err := h.repo.ListByProject(projectID)
+	issues, err := h.repo.ListByProject(projectID, store.IssueFilters{
+		Status:   r.URL.Query().Get("status"),
+		Priority: r.URL.Query().Get("priority"),
+	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to list issues", err.Error())
 		return
@@ -63,7 +65,7 @@ func (h *IssueHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issue, err := h.repo.Create(projectID, req.Identifier, req.Title, req.Description, req.Status, req.Priority)
+	issue, err := h.repo.Create(projectID, req.Title, req.Description, req.Status, req.Priority)
 	if err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY") {
 			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid project reference", "")

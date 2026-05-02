@@ -100,7 +100,6 @@ func TestE2E(t *testing.T) {
 
 	t.Run("create issue", func(t *testing.T) {
 		body := map[string]string{
-			"identifier":  "ISSUE-1",
 			"title":       "E2E Test Issue",
 			"description": "Created during E2E test",
 			"priority":    "high",
@@ -117,6 +116,12 @@ func TestE2E(t *testing.T) {
 		}
 		if result["title"] != "E2E Test Issue" {
 			t.Errorf("expected title 'E2E Test Issue', got '%v'", result["title"])
+		}
+		if result["identifier"] != "ISSUE-1" {
+			t.Errorf("expected generated identifier 'ISSUE-1', got '%v'", result["identifier"])
+		}
+		if result["position"] != float64(1) {
+			t.Errorf("expected generated position 1, got '%v'", result["position"])
 		}
 	})
 
