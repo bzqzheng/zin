@@ -392,6 +392,41 @@ func TestTagCRUDAndIssueAttachIdempotency(t *testing.T) {
 	}
 }
 
+func TestTagAttachRejectsCrossProjectTags(t *testing.T) {
+	_, pr, ir, tr, _, _, cleanup := setupInteractionStore(t)
+	defer cleanup()
+
+	firstProject, err := pr.Create("First Project", "")
+	if err != nil {
+		t.Fatalf("create first project: %v", err)
+	}
+	secondProject, err := pr.Create("Second Project", "")
+	if err != nil {
+		t.Fatalf("create second project: %v", err)
+	}
+	issue, err := ir.Create(firstProject.ID, "Scoped Issue", "", "", "")
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	tag, err := tr.Create(secondProject.ID, "Foreign Tag", "")
+	if err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+
+	err = tr.AttachToIssue(issue.ID, tag.ID)
+	if err == nil || !strings.Contains(err.Error(), "same project") {
+		t.Fatalf("expected cross-project attach rejection, got %v", err)
+	}
+
+	tags, err := tr.ListByIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("list issue tags: %v", err)
+	}
+	if len(tags) != 0 {
+		t.Fatalf("expected no cross-project tags attached, got %#v", tags)
+	}
+}
+
 func TestIssueCommentCRUD(t *testing.T) {
 	_, pr, ir, _, cr, _, cleanup := setupInteractionStore(t)
 	defer cleanup()

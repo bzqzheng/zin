@@ -138,7 +138,22 @@ func (r *TagRepository) Delete(id string) error {
 }
 
 func (r *TagRepository) AttachToIssue(issueID, tagID string) error {
-	_, err := r.q.Exec(
+	var sameProject int
+	err := r.q.QueryRow(
+		`SELECT COUNT(*)
+		 FROM issues i
+		 JOIN tags t ON t.project_id = i.project_id
+		 WHERE i.id = ? AND t.id = ?`,
+		issueID, tagID,
+	).Scan(&sameProject)
+	if err != nil {
+		return fmt.Errorf("verify issue tag project scope: %w", err)
+	}
+	if sameProject == 0 {
+		return fmt.Errorf("attach issue tag: issue and tag must exist in the same project")
+	}
+
+	_, err = r.q.Exec(
 		"INSERT OR IGNORE INTO issue_tags (issue_id, tag_id, created_at) VALUES (?, ?, ?)",
 		issueID, tagID, time.Now().UTC().Format(time.RFC3339),
 	)
