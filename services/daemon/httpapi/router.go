@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/bzqzheng/zin/services/daemon/httpapi/handler"
 	"github.com/bzqzheng/zin/services/daemon/httpapi/response"
@@ -64,5 +66,51 @@ func NewRouter(
 		})
 	})
 
-	return mux
+	return withCORS(mux)
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); isAllowedOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.Header().Add("Vary", "Origin")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	switch parsed.Scheme {
+	case "tauri":
+		return parsed.Hostname() == "localhost"
+	case "http", "https":
+		host := parsed.Hostname()
+		if host == "" {
+			host, _, err = net.SplitHostPort(parsed.Host)
+			if err != nil {
+				return false
+			}
+		}
+		return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "tauri.localhost"
+	default:
+		return false
+	}
 }
