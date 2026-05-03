@@ -81,7 +81,7 @@ func run() error {
 	router := httpapi.NewRouter(
 		healthHandler,
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(database, issueRepo, projectRepo),
+		handler.NewIssueHandler(database, issueRepo, projectRepo, agentRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
