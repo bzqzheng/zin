@@ -86,6 +86,30 @@ type IssueActivity struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type IssueAssignment struct {
+	ID                 string     `json:"id"`
+	IssueID            string     `json:"issue_id"`
+	AgentID            string     `json:"agent_id"`
+	AgentName          string     `json:"agent_name"`
+	RuntimeID          string     `json:"runtime_id"`
+	RuntimeName        string     `json:"runtime_name"`
+	RuntimeStatus      string     `json:"runtime_status"`
+	RequestedBy        string     `json:"requested_by"`
+	SourceType         string     `json:"source_type"`
+	SourceID           string     `json:"source_id"`
+	ClientRequestID    string     `json:"client_request_id"`
+	RequestFingerprint string     `json:"request_fingerprint"`
+	Status             string     `json:"status"`
+	DedupeKey          string     `json:"dedupe_key"`
+	RequestedAt        time.Time  `json:"requested_at"`
+	AcceptedAt         *time.Time `json:"accepted_at"`
+	CompletedAt        *time.Time `json:"completed_at"`
+	FailedAt           *time.Time `json:"failed_at"`
+	CancelledAt        *time.Time `json:"cancelled_at"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
 func parseTime(s string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
