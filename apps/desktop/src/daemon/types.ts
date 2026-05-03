@@ -29,3 +29,32 @@ export interface Issue {
   created_at: string
   updated_at: string
 }
+
+export interface Tag {
+  id: string
+  project_id: string
+  name: string
+  color: string
+  created_at: string
+  updated_at: string
+}
+
+export interface IssueComment {
+  id: string
+  issue_id: string
+  author_id: string
+  author_name: string
+  body: string
+  created_at: string
+  updated_at: string
+}
+
+export interface IssueActivity {
+  id: string
+  issue_id: string
+  actor_id: string
+  type: string
+  summary: string
+  metadata: Record<string, unknown>
+  created_at: string
+}

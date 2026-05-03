@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
-import IssueDetail from './components/IssueDetail'
+import IssueDetail, { type IssueUpdateInput } from './components/IssueDetail'
 import Timeline from './components/Timeline'
 import { useDaemon } from './daemon'
-import type { Issue, Project } from './daemon'
+import type { Issue, IssueActivity, IssueComment, Project, Tag } from './daemon'
 
 export type LoadStatus = 'idle' | 'loading' | 'success' | 'error'
 
@@ -43,19 +43,81 @@ const emptyLoadedIssueDetail: ResourceState<Issue | null> = {
   error: null,
 }
 
+const emptyProjectTags: ResourceState<Tag[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedProjectTags: ResourceState<Tag[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
+const emptyIssueTags: ResourceState<Tag[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedIssueTags: ResourceState<Tag[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
+const emptyComments: ResourceState<IssueComment[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedComments: ResourceState<IssueComment[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
+const emptyActivity: ResourceState<IssueActivity[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedActivity: ResourceState<IssueActivity[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err)
+}
+
+function jsonRequest(method: string, body?: unknown): RequestInit {
+  return {
+    method,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }
 }
 
 export default function App() {
   const { baseURL, error: daemonError, fetchApi, startDaemon } = useDaemon()
   const daemonStartRef = useRef<Promise<unknown> | null>(null)
+  const issueLoadSeqRef = useRef(0)
   const [daemonStatus, setDaemonStatus] = useState<LoadStatus>('loading')
   const [projects, setProjects] = useState<ResourceState<Project[]>>(emptyProjects)
   const [issues, setIssues] = useState<ResourceState<Issue[]>>(emptyIssues)
   const [issueDetail, setIssueDetail] = useState<ResourceState<Issue | null>>(emptyIssueDetail)
+  const [projectTags, setProjectTags] = useState<ResourceState<Tag[]>>(emptyProjectTags)
+  const [issueTags, setIssueTags] = useState<ResourceState<Tag[]>>(emptyIssueTags)
+  const [comments, setComments] = useState<ResourceState<IssueComment[]>>(emptyComments)
+  const [activity, setActivity] = useState<ResourceState<IssueActivity[]>>(emptyActivity)
   const [preferredProjectId, setPreferredProjectId] = useState<string | null>(null)
   const [preferredIssueId, setPreferredIssueId] = useState<string | null>(null)
+  const [mutationPending, setMutationPending] = useState(false)
+  const [mutationError, setMutationError] = useState<string | null>(null)
 
   const selectedProjectId =
     projects.status === 'success'
@@ -79,6 +141,26 @@ export default function App() {
       ? emptyLoadedIssueDetail
       : issueDetail
 
+  const visibleProjectTags =
+    projects.status === 'success' && !selectedProjectId
+      ? emptyLoadedProjectTags
+      : projectTags
+
+  const visibleIssueTags =
+    visibleIssues.status === 'success' && !selectedIssueId
+      ? emptyLoadedIssueTags
+      : issueTags
+
+  const visibleComments =
+    visibleIssues.status === 'success' && !selectedIssueId
+      ? emptyLoadedComments
+      : comments
+
+  const visibleActivity =
+    visibleIssues.status === 'success' && !selectedIssueId
+      ? emptyLoadedActivity
+      : activity
+
   const fetchProjects = useCallback(() => fetchApi<Project[]>('/api/projects'), [fetchApi])
 
   const fetchIssues = useCallback(
@@ -91,13 +173,42 @@ export default function App() {
     [fetchApi],
   )
 
+  const fetchProjectTags = useCallback(
+    (projectId: string) => fetchApi<Tag[]>(`/api/projects/${projectId}/tags`),
+    [fetchApi],
+  )
+
+  const fetchIssueTags = useCallback(
+    (issueId: string) => fetchApi<Tag[]>(`/api/issues/${issueId}/tags`),
+    [fetchApi],
+  )
+
+  const fetchComments = useCallback(
+    (issueId: string) => fetchApi<IssueComment[]>(`/api/issues/${issueId}/comments`),
+    [fetchApi],
+  )
+
+  const fetchActivity = useCallback(
+    (issueId: string) => fetchApi<IssueActivity[]>(`/api/issues/${issueId}/activity`),
+    [fetchApi],
+  )
+
+  const resetIssueInteractions = useCallback((loaded = false) => {
+    setIssueTags(loaded ? emptyLoadedIssueTags : emptyIssueTags)
+    setComments(loaded ? emptyLoadedComments : emptyComments)
+    setActivity(loaded ? emptyLoadedActivity : emptyActivity)
+  }, [])
+
   const resetWorkspaceCache = useCallback(() => {
     setProjects(emptyProjects)
     setIssues(emptyIssues)
     setIssueDetail(emptyIssueDetail)
+    setProjectTags(emptyProjectTags)
+    resetIssueInteractions()
     setPreferredProjectId(null)
     setPreferredIssueId(null)
-  }, [])
+    setMutationError(null)
+  }, [resetIssueInteractions])
 
   const startDaemonOnce = useCallback(() => {
     if (!daemonStartRef.current) {
@@ -132,17 +243,39 @@ export default function App() {
       setProjects({ status: 'success', data, error: null })
       setIssues(data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedIssues)
       setIssueDetail(emptyLoadedIssueDetail)
+      setProjectTags(data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedProjectTags)
+      resetIssueInteractions(data.length === 0)
     } catch (err) {
       setProjects({ status: 'error', data: [], error: errorMessage(err) })
       setIssues(emptyIssues)
       setIssueDetail(emptyIssueDetail)
+      setProjectTags(emptyProjectTags)
+      resetIssueInteractions()
     }
-  }, [baseURL, fetchProjects])
+  }, [baseURL, fetchProjects, resetIssueInteractions])
+
+  const loadProjectTags = useCallback(
+    async (projectId: string | null = selectedProjectId) => {
+      if (!baseURL || !projectId) {
+        setProjectTags(emptyLoadedProjectTags)
+        return
+      }
+
+      setProjectTags((prev) => ({ ...prev, status: 'loading', error: null }))
+      try {
+        const data = await fetchProjectTags(projectId)
+        setProjectTags({ status: 'success', data, error: null })
+      } catch (err) {
+        setProjectTags({ status: 'error', data: [], error: errorMessage(err) })
+      }
+    },
+    [baseURL, fetchProjectTags, selectedProjectId],
+  )
 
   const loadIssues = useCallback(
     async (projectId: string | null = selectedProjectId) => {
       if (!baseURL || !projectId) {
-        setIssues({ status: 'success', data: [], error: null })
+        setIssues(emptyLoadedIssues)
         setPreferredIssueId(null)
         return
       }
@@ -154,43 +287,296 @@ export default function App() {
         setIssueDetail(
           data.length > 0 ? { status: 'loading', data: null, error: null } : emptyLoadedIssueDetail,
         )
+        resetIssueInteractions(data.length === 0)
       } catch (err) {
         setIssues({ status: 'error', data: [], error: errorMessage(err) })
         setIssueDetail(emptyLoadedIssueDetail)
+        resetIssueInteractions(true)
       }
     },
-    [baseURL, fetchIssues, selectedProjectId],
+    [baseURL, fetchIssues, resetIssueInteractions, selectedProjectId],
   )
 
   const loadIssueDetail = useCallback(
-    async (issueId: string | null = selectedIssueId) => {
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
       if (!baseURL || !issueId) {
-        setIssueDetail({ status: 'success', data: null, error: null })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail(emptyLoadedIssueDetail)
+        }
         return
       }
 
-      setIssueDetail((prev) => ({ ...prev, status: 'loading', error: null }))
+      if (sequence === issueLoadSeqRef.current) {
+        setIssueDetail((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
       try {
         const data = await fetchIssueDetail(issueId)
-        setIssueDetail({ status: 'success', data, error: null })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail({ status: 'success', data, error: null })
+        }
       } catch (err) {
-        setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
+        }
       }
     },
     [baseURL, fetchIssueDetail, selectedIssueId],
+  )
+
+  const loadIssueTags = useCallback(
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
+      if (!baseURL || !issueId) {
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueTags(emptyLoadedIssueTags)
+        }
+        return
+      }
+
+      if (sequence === issueLoadSeqRef.current) {
+        setIssueTags((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
+      try {
+        const data = await fetchIssueTags(issueId)
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueTags({ status: 'success', data, error: null })
+        }
+      } catch (err) {
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+        }
+      }
+    },
+    [baseURL, fetchIssueTags, selectedIssueId],
+  )
+
+  const loadComments = useCallback(
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
+      if (!baseURL || !issueId) {
+        if (sequence === issueLoadSeqRef.current) {
+          setComments(emptyLoadedComments)
+        }
+        return
+      }
+
+      if (sequence === issueLoadSeqRef.current) {
+        setComments((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
+      try {
+        const data = await fetchComments(issueId)
+        if (sequence === issueLoadSeqRef.current) {
+          setComments({ status: 'success', data, error: null })
+        }
+      } catch (err) {
+        if (sequence === issueLoadSeqRef.current) {
+          setComments({ status: 'error', data: [], error: errorMessage(err) })
+        }
+      }
+    },
+    [baseURL, fetchComments, selectedIssueId],
+  )
+
+  const loadActivity = useCallback(
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
+      if (!baseURL || !issueId) {
+        if (sequence === issueLoadSeqRef.current) {
+          setActivity(emptyLoadedActivity)
+        }
+        return
+      }
+
+      if (sequence === issueLoadSeqRef.current) {
+        setActivity((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
+      try {
+        const data = await fetchActivity(issueId)
+        if (sequence === issueLoadSeqRef.current) {
+          setActivity({ status: 'success', data, error: null })
+        }
+      } catch (err) {
+        if (sequence === issueLoadSeqRef.current) {
+          setActivity({ status: 'error', data: [], error: errorMessage(err) })
+        }
+      }
+    },
+    [baseURL, fetchActivity, selectedIssueId],
+  )
+
+  const reloadIssueContext = useCallback(
+    async (
+      issueId: string | null = selectedIssueId,
+      projectId: string | null = selectedProjectId,
+      sequence = issueLoadSeqRef.current,
+    ) => {
+      if (!issueId) {
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail(emptyLoadedIssueDetail)
+          resetIssueInteractions(true)
+        }
+        return
+      }
+
+      await Promise.all([
+        loadIssueDetail(issueId, sequence),
+        loadIssueTags(issueId, sequence),
+        loadComments(issueId, sequence),
+        loadActivity(issueId, sequence),
+        projectId ? loadProjectTags(projectId) : Promise.resolve(),
+      ])
+    },
+    [
+      loadActivity,
+      loadComments,
+      loadIssueDetail,
+      loadIssueTags,
+      loadProjectTags,
+      resetIssueInteractions,
+      selectedIssueId,
+      selectedProjectId,
+    ],
+  )
+
+  const runMutation = useCallback(async (operation: (sequence: number) => Promise<void>) => {
+    const sequence = issueLoadSeqRef.current
+    setMutationPending(true)
+    setMutationError(null)
+    try {
+      await operation(sequence)
+    } catch (err) {
+      if (sequence === issueLoadSeqRef.current) {
+        setMutationError(errorMessage(err))
+      }
+      throw err
+    } finally {
+      if (sequence === issueLoadSeqRef.current) {
+        setMutationPending(false)
+      }
+    }
+  }, [])
+
+  const updateIssue = useCallback(
+    async (input: IssueUpdateInput) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<Issue>(`/api/issues/${selectedIssueId}`, jsonRequest('PUT', input))
+        if (sequence !== issueLoadSeqRef.current) return
+        await Promise.all([
+          loadIssues(selectedProjectId),
+          reloadIssueContext(selectedIssueId, selectedProjectId, sequence),
+        ])
+      })
+    },
+    [fetchApi, loadIssues, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const createTag = useCallback(
+    async (name: string, color: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<Tag[]>(`/api/issues/${selectedIssueId}/tags`, jsonRequest('POST', { name, color }))
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const attachTag = useCallback(
+    async (tagId: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<Tag[]>(`/api/issues/${selectedIssueId}/tags`, jsonRequest('POST', { tag_id: tagId }))
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const detachTag = useCallback(
+    async (tagId: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<void>(`/api/issues/${selectedIssueId}/tags/${tagId}`, jsonRequest('DELETE'))
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const createComment = useCallback(
+    async (body: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<IssueComment>(
+          `/api/issues/${selectedIssueId}/comments`,
+          jsonRequest('POST', { body, author_id: 'local-user' }),
+        )
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const updateComment = useCallback(
+    async (commentId: string, body: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<IssueComment>(`/api/comments/${commentId}`, jsonRequest('PUT', { body }))
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const deleteComment = useCallback(
+    async (commentId: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<void>(`/api/comments/${commentId}`, jsonRequest('DELETE'))
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
   )
 
   const selectProject = useCallback(
     (projectId: string) => {
       if (projectId === selectedProjectId) return
 
+      issueLoadSeqRef.current += 1
       setPreferredProjectId(projectId)
       setPreferredIssueId(null)
       setIssues({ status: 'loading', data: [], error: null })
       setIssueDetail({ status: 'loading', data: null, error: null })
+      setProjectTags({ status: 'loading', data: [], error: null })
+      resetIssueInteractions()
+      setMutationPending(false)
+      setMutationError(null)
     },
-    [selectedProjectId],
+    [resetIssueInteractions, selectedProjectId],
   )
+
+  const selectIssue = useCallback((issueId: string) => {
+    issueLoadSeqRef.current += 1
+    setPreferredIssueId(issueId)
+    setIssueDetail({ status: 'loading', data: null, error: null })
+    setIssueTags({ status: 'loading', data: [], error: null })
+    setComments({ status: 'loading', data: [], error: null })
+    setActivity({ status: 'loading', data: [], error: null })
+    setMutationPending(false)
+    setMutationError(null)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -231,12 +617,18 @@ export default function App() {
           setProjects({ status: 'success', data, error: null })
           setIssues(data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedIssues)
           setIssueDetail(emptyLoadedIssueDetail)
+          setProjectTags(
+            data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedProjectTags,
+          )
+          resetIssueInteractions(data.length === 0)
         }
       } catch (err) {
         if (!cancelled) {
           setProjects({ status: 'error', data: [], error: errorMessage(err) })
           setIssues(emptyIssues)
           setIssueDetail(emptyIssueDetail)
+          setProjectTags(emptyProjectTags)
+          resetIssueInteractions()
         }
       }
     }
@@ -246,7 +638,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, fetchProjects])
+  }, [baseURL, fetchProjects, resetIssueInteractions])
 
   useEffect(() => {
     if (!baseURL || projects.status !== 'success') return
@@ -258,19 +650,32 @@ export default function App() {
 
     async function load() {
       try {
-        const data = await fetchIssues(projectId)
+        const issueData = await fetchIssues(projectId)
         if (!cancelled) {
-          setIssues({ status: 'success', data, error: null })
+          setIssues({ status: 'success', data: issueData, error: null })
           setIssueDetail(
-            data.length > 0
+            issueData.length > 0
               ? { status: 'loading', data: null, error: null }
               : emptyLoadedIssueDetail,
           )
+          resetIssueInteractions(issueData.length === 0)
         }
       } catch (err) {
         if (!cancelled) {
           setIssues({ status: 'error', data: [], error: errorMessage(err) })
           setIssueDetail(emptyLoadedIssueDetail)
+          resetIssueInteractions(true)
+        }
+      }
+
+      try {
+        const tagData = await fetchProjectTags(projectId)
+        if (!cancelled) {
+          setProjectTags({ status: 'success', data: tagData ?? [], error: null })
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setProjectTags({ status: 'error', data: [], error: errorMessage(err) })
         }
       }
     }
@@ -280,7 +685,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, fetchIssues, projects.status, selectedProjectId])
+  }, [baseURL, fetchIssues, fetchProjectTags, projects.status, resetIssueInteractions, selectedProjectId])
 
   useEffect(() => {
     if (!baseURL || issues.status !== 'success') return
@@ -289,18 +694,58 @@ export default function App() {
 
     let cancelled = false
     const issueId = selectedIssueId
+    const sequence = issueLoadSeqRef.current
 
     async function load() {
       try {
-        const data = await fetchIssueDetail(issueId)
-        if (!cancelled) {
-          setIssueDetail({ status: 'success', data, error: null })
+        const issueData = await fetchIssueDetail(issueId)
+        if (!cancelled && sequence === issueLoadSeqRef.current) {
+          setIssueDetail({ status: 'success', data: issueData, error: null })
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && sequence === issueLoadSeqRef.current) {
           setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
         }
       }
+
+      await Promise.all([
+        Promise.resolve()
+          .then(() => fetchIssueTags(issueId))
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setIssueTags({ status: 'success', data: data ?? [], error: null })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+            }
+          }),
+        Promise.resolve()
+          .then(() => fetchComments(issueId))
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setComments({ status: 'success', data: data ?? [], error: null })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setComments({ status: 'error', data: [], error: errorMessage(err) })
+            }
+          }),
+        Promise.resolve()
+          .then(() => fetchActivity(issueId))
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setActivity({ status: 'success', data: data ?? [], error: null })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setActivity({ status: 'error', data: [], error: errorMessage(err) })
+            }
+          }),
+      ])
     }
 
     void load()
@@ -308,7 +753,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, fetchIssueDetail, issues.status, selectedIssueId])
+  }, [baseURL, fetchActivity, fetchComments, fetchIssueDetail, fetchIssueTags, issues.status, selectedIssueId])
 
   return (
     <div className="h-screen w-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
@@ -323,10 +768,33 @@ export default function App() {
         onRetryProjects={loadProjects}
         onRetryIssues={() => loadIssues()}
         onSelectProject={selectProject}
-        onSelectIssue={setPreferredIssueId}
+        onSelectIssue={selectIssue}
       />
-      <IssueDetail issue={visibleIssueDetail} onRetry={() => loadIssueDetail()} />
-      <Timeline issue={visibleIssueDetail} />
+      <IssueDetail
+        issue={visibleIssueDetail}
+        projectTags={visibleProjectTags}
+        issueTags={visibleIssueTags}
+        comments={visibleComments}
+        mutationPending={mutationPending}
+        mutationError={mutationError}
+        onRetryIssue={() => loadIssueDetail()}
+        onRetryTags={() => {
+          void Promise.all([loadProjectTags(), loadIssueTags()])
+        }}
+        onRetryComments={() => loadComments()}
+        onUpdateIssue={updateIssue}
+        onCreateTag={createTag}
+        onAttachTag={attachTag}
+        onDetachTag={detachTag}
+        onCreateComment={createComment}
+        onUpdateComment={updateComment}
+        onDeleteComment={deleteComment}
+      />
+      <Timeline
+        activity={visibleActivity}
+        issueSelected={Boolean(visibleIssueDetail.data)}
+        onRetry={() => loadActivity()}
+      />
     </div>
   )
 }

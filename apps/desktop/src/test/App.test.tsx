@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from '../App'
 import { DaemonContext, type DaemonConnectionContext } from '../daemon/useDaemon'
-import type { Issue, Project } from '../daemon'
+import type { Issue, IssueActivity, IssueComment, Project, Tag } from '../daemon'
 
 const projectAlpha: Project = {
   id: 'project-alpha',
@@ -36,6 +36,52 @@ function makeIssue(overrides: Partial<Issue>): Issue {
     updated_at: '2026-05-02T15:00:00Z',
     ...overrides,
   }
+}
+
+const tagBackend: Tag = {
+  id: 'tag-backend',
+  project_id: 'project-alpha',
+  name: 'Backend',
+  color: '#3b82f6',
+  created_at: '2026-05-02T14:05:00Z',
+  updated_at: '2026-05-02T14:05:00Z',
+}
+
+const commentOne: IssueComment = {
+  id: 'comment-one',
+  issue_id: 'issue-alpha',
+  author_id: 'local-user',
+  author_name: 'You',
+  body: 'Existing comment',
+  created_at: '2026-05-02T14:10:00Z',
+  updated_at: '2026-05-02T14:10:00Z',
+}
+
+const activityCreated: IssueActivity = {
+  id: 'activity-one',
+  issue_id: 'issue-alpha',
+  actor_id: '',
+  type: 'issue.created',
+  summary: 'Created work item',
+  metadata: {},
+  created_at: '2026-05-02T14:00:00Z',
+}
+
+function interactionResponse(path: string) {
+  if (path.endsWith('/tags')) return []
+  if (path.endsWith('/comments')) return []
+  if (path.endsWith('/activity')) return []
+  return undefined
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
 }
 
 function renderApp(
@@ -79,6 +125,8 @@ describe('App', () => {
     const fetchApi = vi.fn((path: string) => {
       if (path === '/api/projects') return Promise.resolve([projectAlpha])
       if (path === '/api/projects/project-alpha/issues') return Promise.resolve([])
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -105,6 +153,8 @@ describe('App', () => {
       if (path === '/api/projects/project-beta/issues') return Promise.resolve([betaIssue])
       if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
       if (path === '/api/issues/issue-beta') return Promise.resolve(betaIssue)
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -112,12 +162,12 @@ describe('App', () => {
 
     const detail = await screen.findByRole('heading', { name: 'Alpha issue' })
     expect(detail).toBeVisible()
-    expect(screen.getByText('Persisted issue description')).toBeVisible()
+    expect(await screen.findByDisplayValue('Persisted issue description')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Beta' }))
 
     expect(await screen.findByRole('heading', { name: 'Beta issue' })).toBeVisible()
-    expect(screen.getByText('In Progress')).toBeVisible()
+    expect(screen.getAllByText('In Progress')[0]).toBeVisible()
     await waitFor(() => {
       expect(fetchApi).toHaveBeenCalledWith('/api/issues/issue-beta')
     })
@@ -129,6 +179,8 @@ describe('App', () => {
       if (path === '/api/projects') return Promise.resolve([projectAlpha])
       if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
       if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -143,11 +195,18 @@ describe('App', () => {
   })
 
   it('retries project loading after an error', async () => {
-    const fetchApi = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('database unavailable'))
-      .mockResolvedValueOnce([projectAlpha])
-      .mockResolvedValueOnce([])
+    let projectAttempts = 0
+    const fetchApi = vi.fn((path: string) => {
+      if (path === '/api/projects') {
+        projectAttempts += 1
+        if (projectAttempts === 1) return Promise.reject(new Error('database unavailable'))
+        return Promise.resolve([projectAlpha])
+      }
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([])
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
+      throw new Error(`unexpected path: ${path}`)
+    })
 
     renderApp(fetchApi)
 
@@ -161,5 +220,231 @@ describe('App', () => {
 
     expect(await screen.findByRole('button', { name: 'Alpha' })).toBeVisible()
     expect(await screen.findByText('No issues in this project')).toBeVisible()
+  })
+
+  it('saves issue fields through the daemon and reloads server truth after retry', async () => {
+    let issueState = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    let activityState = [activityCreated]
+    let updateAttempts = 0
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([issueState])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') {
+        if (init?.method === 'PUT') {
+          updateAttempts += 1
+          if (updateAttempts === 1) return Promise.reject(new Error('write conflict'))
+          const body = JSON.parse(String(init.body))
+          issueState = { ...issueState, ...body, updated_at: '2026-05-02T16:00:00Z' }
+          activityState = [
+            ...activityState,
+            {
+              id: 'activity-two',
+              issue_id: issueState.id,
+              actor_id: '',
+              type: 'issue.updated',
+              summary: 'Updated work item',
+              metadata: {},
+              created_at: '2026-05-02T16:00:00Z',
+            },
+          ]
+          return Promise.resolve(issueState)
+        }
+        return Promise.resolve(issueState)
+      }
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve(activityState)
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Server title' } })
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'done' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Fields' }))
+
+    expect(await screen.findByText('Update failed')).toBeVisible()
+    expect(screen.getByText('write conflict')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Fields' }))
+
+    expect(await screen.findByRole('heading', { name: 'Server title' })).toBeVisible()
+    expect(await screen.findByText('Updated work item')).toBeVisible()
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/issues/issue-alpha',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('"title":"Server title"'),
+        }),
+      )
+    })
+  })
+
+  it('ignores stale mutation reloads after selecting another issue', async () => {
+    let alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    const betaIssue = makeIssue({
+      id: 'issue-beta',
+      identifier: 'ISSUE-2',
+      title: 'Beta issue',
+      status: 'in_progress',
+    })
+    const update = deferred<Issue>()
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue, betaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') {
+        if (init?.method === 'PUT') return update.promise
+        return Promise.resolve(alphaIssue)
+      }
+      if (path === '/api/issues/issue-beta') return Promise.resolve(betaIssue)
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Alpha updated' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Fields' }))
+    fireEvent.click(screen.getByRole('button', { name: /ISSUE-2.*Beta issue/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Beta issue' })).toBeVisible()
+
+    alphaIssue = { ...alphaIssue, title: 'Alpha updated', updated_at: '2026-05-02T16:00:00Z' }
+    update.resolve(alphaIssue)
+
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/issues/issue-alpha',
+        expect.objectContaining({ method: 'PUT' }),
+      )
+    })
+    expect(screen.getByRole('heading', { name: 'Beta issue' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Alpha updated' })).not.toBeInTheDocument()
+  })
+
+  it('creates, attaches, and detaches tags with server reloads', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    let projectTags = [tagBackend]
+    let issueTags: Tag[] = []
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve(projectTags)
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-alpha/tags') {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body))
+          if (body.tag_id) {
+            issueTags = projectTags.filter((tag) => tag.id === body.tag_id)
+          } else {
+            const tag = {
+              ...tagBackend,
+              id: 'tag-ui',
+              name: body.name,
+              color: body.color,
+            }
+            projectTags = [...projectTags, tag]
+            issueTags = [tag]
+          }
+        }
+        return Promise.resolve(issueTags)
+      }
+      if (path === '/api/issues/issue-alpha/tags/tag-backend' && init?.method === 'DELETE') {
+        issueTags = []
+        return Promise.resolve(undefined)
+      }
+      if (path === '/api/issues/issue-alpha/tags/tag-ui' && init?.method === 'DELETE') {
+        issueTags = []
+        return Promise.resolve(undefined)
+      }
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([])
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }))
+    expect(await screen.findByLabelText('Detach Backend')).toBeVisible()
+
+    fireEvent.click(screen.getByLabelText('Detach Backend'))
+    expect(await screen.findByText('No tags attached')).toBeVisible()
+
+    fireEvent.change(screen.getByPlaceholderText('New tag'), { target: { value: 'UI' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByText('UI')).toBeVisible()
+  })
+
+  it('adds, edits, and deletes comments chronologically from the daemon', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    let comments = [commentOne]
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body))
+          comments = [
+            ...comments,
+            {
+              ...commentOne,
+              id: 'comment-two',
+              body: body.body,
+              created_at: '2026-05-02T14:20:00Z',
+              updated_at: '2026-05-02T14:20:00Z',
+            },
+          ]
+        }
+        return Promise.resolve(comments)
+      }
+      if (path === '/api/comments/comment-one' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body))
+        comments = comments.map((comment) =>
+          comment.id === 'comment-one' ? { ...comment, body: body.body } : comment,
+        )
+        return Promise.resolve(comments[0])
+      }
+      if (path === '/api/comments/comment-two' && init?.method === 'DELETE') {
+        comments = comments.filter((comment) => comment.id !== 'comment-two')
+        return Promise.resolve(undefined)
+      }
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByText('Existing comment')).toBeVisible()
+
+    fireEvent.change(screen.getByPlaceholderText('Add a comment'), { target: { value: 'Second comment' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add Comment' }))
+    expect(await screen.findByText('Second comment')).toBeVisible()
+
+    const firstComment = screen.getByText('Existing comment').closest('div')
+    if (!firstComment) throw new Error('first comment missing')
+    fireEvent.click(within(firstComment).getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByDisplayValue('Existing comment'), { target: { value: 'Edited comment' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByDisplayValue('Edited comment')).not.toBeInTheDocument())
+    expect(screen.getByText('Edited comment')).toBeVisible()
+
+    const secondComment = screen.getByText('Second comment').closest('div')
+    if (!secondComment) throw new Error('second comment missing')
+    fireEvent.click(within(secondComment).getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(screen.queryByText('Second comment')).not.toBeInTheDocument())
   })
 })
