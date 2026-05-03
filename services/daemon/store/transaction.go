@@ -12,10 +12,11 @@ type sqlRunner interface {
 }
 
 type Repositories struct {
-	Issues   *IssueRepository
-	Tags     *TagRepository
-	Comments *IssueCommentRepository
-	Activity *IssueActivityRepository
+	Issues      *IssueRepository
+	Tags        *TagRepository
+	Comments    *IssueCommentRepository
+	Activity    *IssueActivityRepository
+	Assignments *IssueAssignmentRepository
 }
 
 func WithTx(db *sql.DB, fn func(Repositories) error) error {
@@ -26,10 +27,11 @@ func WithTx(db *sql.DB, fn func(Repositories) error) error {
 	defer tx.Rollback()
 
 	repos := Repositories{
-		Issues:   newIssueRepository(nil, tx),
-		Tags:     newTagRepository(nil, tx),
-		Comments: newIssueCommentRepository(nil, tx),
-		Activity: newIssueActivityRepository(nil, tx),
+		Issues:      newIssueRepository(nil, tx),
+		Tags:        newTagRepository(nil, tx),
+		Comments:    newIssueCommentRepository(nil, tx),
+		Activity:    newIssueActivityRepository(nil, tx),
+		Assignments: newIssueAssignmentRepository(nil, tx),
 	}
 
 	if err := fn(repos); err != nil {

@@ -7,6 +7,7 @@ export type {
   Issue,
   Tag,
   IssueComment,
+  IssueAssignment,
   IssueActivity,
   RuntimeKind,
   RuntimeHealthStatus,

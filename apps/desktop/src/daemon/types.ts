@@ -22,20 +22,6 @@ export interface Agent {
   updated_at: string
 }
 
-export interface Runtime {
-  id: string
-  name: string
-  kind: string
-  command: string
-  path: string
-  version: string
-  status: string
-  status_message: string
-  last_checked_at: string
-  created_at: string
-  updated_at: string
-}
-
 export interface Issue {
   id: string
   project_id: string
@@ -66,6 +52,29 @@ export interface IssueComment {
   author_id: string
   author_name: string
   body: string
+  created_at: string
+  updated_at: string
+}
+
+export interface IssueAssignment {
+  id: string
+  issue_id: string
+  agent_id: string
+  agent_name: string
+  runtime_id: string
+  runtime_name: string
+  runtime_status: string
+  requested_by: string
+  source_type: 'issue_detail' | 'comment'
+  source_id: string
+  client_request_id: string
+  status: 'queued' | 'accepted' | 'completed' | 'failed' | 'cancelled'
+  dedupe_key: string
+  requested_at: string
+  accepted_at: string | null
+  completed_at: string | null
+  failed_at: string | null
+  cancelled_at: string | null
   created_at: string
   updated_at: string
 }

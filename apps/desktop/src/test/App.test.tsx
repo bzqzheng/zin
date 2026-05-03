@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from '../App'
 import { DaemonContext, type DaemonConnectionContext } from '../daemon/useDaemon'
-import type { Issue, IssueActivity, IssueComment, Project, RuntimeRecord, Tag } from '../daemon'
+import type { Agent, Issue, IssueActivity, IssueAssignment, IssueComment, Project, RuntimeRecord, Tag } from '../daemon'
 
 const projectAlpha: Project = {
   id: 'project-alpha',
@@ -80,12 +80,29 @@ const codexRuntime: RuntimeRecord = {
   updated_at: '2026-05-03T20:00:00Z',
 }
 
+const agentAssignable: Agent = {
+  id: 'agent-trinity',
+  name: 'Trinity',
+  role: 'builder',
+  status: 'offline',
+  runtime_id: codexRuntime.id,
+  runtime_name: codexRuntime.display_name,
+  runtime_status: 'healthy',
+  model: 'gpt-5',
+  instructions: 'Complete the work.',
+  assignable: true,
+  assignable_reason: '',
+  created_at: '2026-05-02T13:05:00Z',
+  updated_at: '2026-05-02T13:05:00Z',
+}
+
 function interactionResponse(path: string) {
   if (path === '/api/agents') return []
   if (path === '/api/runtimes') return []
   if (path.endsWith('/tags')) return []
   if (path.endsWith('/comments')) return []
   if (path.endsWith('/activity')) return []
+  if (path.endsWith('/assignments')) return { assignments: [] }
   return undefined
 }
 
@@ -601,6 +618,87 @@ describe('App', () => {
         '/api/runtimes/discover',
         expect.objectContaining({ method: 'POST' }),
       )
+    })
+  })
+
+  it('creates issue-detail and comment assignments and shows queued status', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    let assignments: IssueAssignment[] = []
+    let activity = [activityCreated]
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/agents') return Promise.resolve([agentAssignable])
+      if (path === '/api/runtimes') return Promise.resolve({ runtimes: [codexRuntime] })
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([commentOne])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve(activity)
+      if (path === '/api/issues/issue-alpha/assignments') {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body))
+          const assignment: IssueAssignment = {
+            id: `assignment-${assignments.length + 1}`,
+            issue_id: alphaIssue.id,
+            agent_id: body.agent_id,
+            agent_name: agentAssignable.name,
+            runtime_id: codexRuntime.id,
+            runtime_name: codexRuntime.display_name,
+            runtime_status: 'healthy',
+            requested_by: 'local-user',
+            source_type: body.source_type,
+            source_id: body.source_id,
+            client_request_id: body.client_request_id,
+            status: 'queued',
+            dedupe_key: `dedupe-${assignments.length + 1}`,
+            requested_at: '2026-05-02T14:30:00Z',
+            accepted_at: null,
+            completed_at: null,
+            failed_at: null,
+            cancelled_at: null,
+            created_at: '2026-05-02T14:30:00Z',
+            updated_at: '2026-05-02T14:30:00Z',
+          }
+          assignments = [...assignments, assignment]
+          activity = [
+            ...activity,
+            {
+              id: `activity-assignment-${assignments.length}`,
+              issue_id: alphaIssue.id,
+              actor_id: 'local-user',
+              type: 'assignment.requested',
+              summary: `Queued assignment for ${agentAssignable.name}`,
+              metadata: { assignment_id: assignment.id },
+              created_at: '2026-05-02T14:30:00Z',
+            },
+          ]
+          return Promise.resolve({ assignment })
+        }
+        return Promise.resolve({ assignments })
+      }
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Assign Agent' }))
+    expect(await screen.findAllByText('Queued')).toHaveLength(2)
+    expect(screen.getByText('Queued assignment for Trinity')).toBeVisible()
+
+    const firstComment = screen.getByText('Existing comment').closest('div')
+    if (!firstComment) throw new Error('first comment missing')
+    fireEvent.click(within(firstComment).getByRole('button', { name: 'Assign' }))
+
+    await waitFor(() => {
+      const assignmentRequests = fetchApi.mock.calls.filter(
+        ([path, init]) => path === '/api/issues/issue-alpha/assignments' && init?.method === 'POST',
+      )
+      expect(assignmentRequests).toHaveLength(2)
+      expect(String(assignmentRequests[1][1]?.body)).toContain('"source_type":"comment"')
+      expect(String(assignmentRequests[1][1]?.body)).toContain('"source_id":"comment-one"')
     })
   })
 })

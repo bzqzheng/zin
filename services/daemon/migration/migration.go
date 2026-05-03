@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 					return fmt.Errorf("create issue position index: %w", err)
 				}
 			}
+			if version == "005_agent_runtime_binding.sql" {
+				if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_agents_runtime_id ON agents(runtime_id)"); err != nil {
+					return fmt.Errorf("create agent runtime index: %w", err)
+				}
+			}
 			if err := markMigrationApplied(tx, version); err != nil {
 				return err
 			}
@@ -92,6 +97,18 @@ func migrationApplied(tx *sql.Tx, version string) (bool, error) {
 }
 
 func migrationAlreadyCurrent(tx *sql.Tx, version string) (bool, error) {
+	if version == "005_agent_runtime_binding.sql" {
+		var count int
+		if err := tx.QueryRow(`
+SELECT COUNT(*)
+FROM pragma_table_info('agents')
+WHERE name IN ('runtime_id', 'model', 'instructions') AND [notnull] = 1
+`).Scan(&count); err != nil {
+			return false, fmt.Errorf("check agent runtime binding schema: %w", err)
+		}
+		return count == 3, nil
+	}
+
 	if version != "002_upgrade_issues_contract.sql" {
 		return false, nil
 	}

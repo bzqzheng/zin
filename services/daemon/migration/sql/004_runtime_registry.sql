@@ -1,4 +1,6 @@
-CREATE TABLE IF NOT EXISTS runtimes (
+DROP TABLE IF EXISTS runtimes;
+
+CREATE TABLE runtimes (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     display_name TEXT NOT NULL,

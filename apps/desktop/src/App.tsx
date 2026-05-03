@@ -8,6 +8,7 @@ import type {
   Agent,
   Issue,
   IssueActivity,
+  IssueAssignment,
   IssueComment,
   Project,
   RuntimeDiscoveryResponse,
@@ -104,6 +105,18 @@ const emptyLoadedActivity: ResourceState<IssueActivity[]> = {
   error: null,
 }
 
+const emptyAssignments: ResourceState<IssueAssignment[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedAssignments: ResourceState<IssueAssignment[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
 const emptyAgents: ResourceState<Agent[]> = {
   status: 'idle',
   data: [],
@@ -164,6 +177,7 @@ export default function App() {
   const [issueTags, setIssueTags] = useState<ResourceState<Tag[]>>(emptyIssueTags)
   const [comments, setComments] = useState<ResourceState<IssueComment[]>>(emptyComments)
   const [activity, setActivity] = useState<ResourceState<IssueActivity[]>>(emptyActivity)
+  const [assignments, setAssignments] = useState<ResourceState<IssueAssignment[]>>(emptyAssignments)
   const [agents, setAgents] = useState<ResourceState<Agent[]>>(emptyAgents)
   const [runtimes, setRuntimes] = useState<ResourceState<RuntimeRecord[]>>(emptyRuntimes)
   const [runtimeDiscoverySummary, setRuntimeDiscoverySummary] = useState<RuntimeDiscoverySummary | null>(null)
@@ -217,6 +231,11 @@ export default function App() {
       ? emptyLoadedActivity
       : activity
 
+  const visibleAssignments =
+    visibleIssues.status === 'success' && !selectedIssueId
+      ? emptyLoadedAssignments
+      : assignments
+
   const fetchProjects = useCallback(() => fetchApi<Project[]>('/api/projects'), [fetchApi])
 
   const fetchIssues = useCallback(
@@ -249,6 +268,12 @@ export default function App() {
     [fetchApi],
   )
 
+  const fetchAssignments = useCallback(
+    (issueId: string) =>
+      fetchApi<{ assignments: IssueAssignment[] }>(`/api/issues/${issueId}/assignments`),
+    [fetchApi],
+  )
+
   const fetchAgents = useCallback(() => fetchApi<Agent[]>('/api/agents'), [fetchApi])
 
   const fetchRuntimes = useCallback(
@@ -260,6 +285,7 @@ export default function App() {
     setIssueTags(loaded ? emptyLoadedIssueTags : emptyIssueTags)
     setComments(loaded ? emptyLoadedComments : emptyComments)
     setActivity(loaded ? emptyLoadedActivity : emptyActivity)
+    setAssignments(loaded ? emptyLoadedAssignments : emptyAssignments)
   }, [])
 
   const resetWorkspaceCache = useCallback(() => {
@@ -497,6 +523,32 @@ export default function App() {
     [baseURL, fetchActivity, selectedIssueId],
   )
 
+  const loadAssignments = useCallback(
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
+      if (!baseURL || !issueId) {
+        if (sequence === issueLoadSeqRef.current) {
+          setAssignments(emptyLoadedAssignments)
+        }
+        return
+      }
+
+      if (sequence === issueLoadSeqRef.current) {
+        setAssignments((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
+      try {
+        const data = await fetchAssignments(issueId)
+        if (sequence === issueLoadSeqRef.current) {
+          setAssignments({ status: 'success', data: data.assignments ?? [], error: null })
+        }
+      } catch (err) {
+        if (sequence === issueLoadSeqRef.current) {
+          setAssignments({ status: 'error', data: [], error: errorMessage(err) })
+        }
+      }
+    },
+    [baseURL, fetchAssignments, selectedIssueId],
+  )
+
   const reloadIssueContext = useCallback(
     async (
       issueId: string | null = selectedIssueId,
@@ -516,11 +568,13 @@ export default function App() {
         loadIssueTags(issueId, sequence),
         loadComments(issueId, sequence),
         loadActivity(issueId, sequence),
+        loadAssignments(issueId, sequence),
         projectId ? loadProjectTags(projectId) : Promise.resolve(),
       ])
     },
     [
       loadActivity,
+      loadAssignments,
       loadComments,
       loadIssueDetail,
       loadIssueTags,
@@ -702,6 +756,43 @@ export default function App() {
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
   )
 
+  const createAssignment = useCallback(
+    async (agentId: string, source: { type: 'issue_detail' | 'comment'; id?: string }) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<{ assignment: IssueAssignment }>(
+          `/api/issues/${selectedIssueId}/assignments`,
+          jsonRequest('POST', {
+            agent_id: agentId,
+            source_type: source.type,
+            source_id: source.id ?? '',
+            client_request_id: crypto.randomUUID(),
+          }),
+        )
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const cancelAssignment = useCallback(
+    async (assignmentId: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<{ assignment: IssueAssignment }>(
+          `/api/assignments/${assignmentId}/cancel`,
+          jsonRequest('POST', { reason: 'User cancelled from issue detail' }),
+        )
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
   const createAgent = useCallback(
     async (input: AgentConfigInput) => {
       await runMutation(async () => {
@@ -753,6 +844,7 @@ export default function App() {
     setIssueTags({ status: 'loading', data: [], error: null })
     setComments({ status: 'loading', data: [], error: null })
     setActivity({ status: 'loading', data: [], error: null })
+    setAssignments({ status: 'loading', data: [], error: null })
     setMutationPending(false)
     setMutationError(null)
   }, [])
@@ -956,6 +1048,18 @@ export default function App() {
               setActivity({ status: 'error', data: [], error: errorMessage(err) })
             }
           }),
+        Promise.resolve()
+          .then(() => fetchAssignments(issueId))
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setAssignments({ status: 'success', data: data.assignments ?? [], error: null })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setAssignments({ status: 'error', data: [], error: errorMessage(err) })
+            }
+          }),
       ])
     }
 
@@ -964,7 +1068,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, fetchActivity, fetchComments, fetchIssueDetail, fetchIssueTags, issues.status, selectedIssueId])
+  }, [baseURL, fetchActivity, fetchAssignments, fetchComments, fetchIssueDetail, fetchIssueTags, issues.status, selectedIssueId])
 
   return (
     <div className="h-screen w-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
@@ -1002,6 +1106,7 @@ export default function App() {
             projectTags={visibleProjectTags}
             issueTags={visibleIssueTags}
             comments={visibleComments}
+            assignments={visibleAssignments}
             agents={agents}
             runtimes={runtimes}
             mutationPending={mutationPending}
@@ -1011,6 +1116,7 @@ export default function App() {
               void Promise.all([loadProjectTags(), loadIssueTags()])
             }}
             onRetryComments={() => loadComments()}
+            onRetryAssignments={() => loadAssignments()}
             onRetryAgents={() => {
               void Promise.all([loadAgents(), loadRuntimes()])
             }}
@@ -1021,6 +1127,8 @@ export default function App() {
             onCreateComment={createComment}
             onUpdateComment={updateComment}
             onDeleteComment={deleteComment}
+            onCreateAssignment={createAssignment}
+            onCancelAssignment={cancelAssignment}
             onCreateAgent={createAgent}
             onUpdateAgent={updateAgent}
           />
