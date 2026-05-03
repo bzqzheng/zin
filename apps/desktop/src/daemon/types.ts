@@ -19,6 +19,7 @@ export interface Issue {
   id: string
   project_id: string
   identifier: string
+  position: number
   title: string
   description: string
   status: string

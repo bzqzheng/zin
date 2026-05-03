@@ -47,6 +47,67 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	}
 }
 
+func TestRouterCORSAllowsDesktopOrigins(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected desktop origin to be allowed, got %q", got)
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Fatalf("expected Vary: Origin, got %q", got)
+	}
+}
+
+func TestRouterCORSPreflight(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/projects", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected desktop origin to be allowed, got %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type" {
+		t.Fatalf("expected Content-Type to be allowed, got %q", got)
+	}
+}
+
+func TestRouterCORSRejectsRemoteOrigins(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	req.Header.Set("Origin", "https://example.com")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("expected remote origin to be rejected, got %q", got)
+	}
+}
+
 func TestIssueListFiltersAndGeneratedFields(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()
