@@ -1,18 +1,54 @@
+import { useEffect, useMemo, useState } from 'react'
 import type { ResourceState } from '../App'
-import type { Issue } from '../daemon'
+import type { Issue, IssueComment, Tag } from '../daemon'
+
+export interface IssueUpdateInput {
+  title: string
+  description: string
+  status: string
+  priority: string
+  assignee_id: string
+}
 
 interface IssueDetailProps {
   issue: ResourceState<Issue | null>
-  onRetry: () => void
+  projectTags: ResourceState<Tag[]>
+  issueTags: ResourceState<Tag[]>
+  comments: ResourceState<IssueComment[]>
+  mutationPending: boolean
+  mutationError: string | null
+  onRetryIssue: () => void
+  onRetryTags: () => void
+  onRetryComments: () => void
+  onUpdateIssue: (input: IssueUpdateInput) => Promise<void>
+  onCreateTag: (name: string, color: string) => Promise<void>
+  onAttachTag: (tagId: string) => Promise<void>
+  onDetachTag: (tagId: string) => Promise<void>
+  onCreateComment: (body: string) => Promise<void>
+  onUpdateComment: (commentId: string, body: string) => Promise<void>
+  onDeleteComment: (commentId: string) => Promise<void>
 }
 
 const labelStyle = 'text-xs bg-zinc-900 px-2 py-0.5 rounded'
+const inputStyle =
+  'w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-600'
+const buttonStyle =
+  'rounded border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50'
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
+  }).format(new Date(value))
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   }).format(new Date(value))
 }
 
@@ -31,7 +67,164 @@ function EmptyDetail() {
   )
 }
 
-export default function IssueDetail({ issue, onRetry }: IssueDetailProps) {
+function SectionError({
+  title,
+  error,
+  onRetry,
+}: {
+  title: string
+  error: string | null
+  onRetry: () => void
+}) {
+  return (
+    <div className="rounded border border-red-900/50 bg-red-950/20 px-3 py-2">
+      <p className="text-sm text-red-300">{title}</p>
+      {error && <p className="mt-1 text-sm text-zinc-500">{error}</p>}
+      <button type="button" onClick={onRetry} className="mt-2 text-sm font-medium text-zinc-200 hover:text-white">
+        Retry
+      </button>
+    </div>
+  )
+}
+
+function CommentItem({
+  comment,
+  disabled,
+  onUpdate,
+  onDelete,
+}: {
+  comment: IssueComment
+  disabled: boolean
+  onUpdate: (commentId: string, body: string) => Promise<void>
+  onDelete: (commentId: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [body, setBody] = useState(comment.body)
+
+  if (editing) {
+    return (
+      <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3">
+        <textarea
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          rows={3}
+          className={inputStyle}
+        />
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            disabled={disabled || body.trim() === ''}
+            onClick={async () => {
+              try {
+                await onUpdate(comment.id, body)
+                setEditing(false)
+              } catch {
+                // Parent renders the recoverable mutation error.
+              }
+            }}
+            className={buttonStyle}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              setBody(comment.body)
+              setEditing(false)
+            }}
+            className={buttonStyle}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-zinc-300">{comment.author_name || 'You'}</p>
+          <p className="text-xs text-zinc-500">{formatDateTime(comment.created_at)}</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              setBody(comment.body)
+              setEditing(true)
+            }}
+            className="text-xs text-zinc-400 hover:text-white"
+          >
+            Edit
+          </button>
+          <button type="button" disabled={disabled} onClick={() => onDelete(comment.id)} className="text-xs text-red-300 hover:text-red-100">
+            Delete
+          </button>
+        </div>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-400">{comment.body}</p>
+    </div>
+  )
+}
+
+export default function IssueDetail({
+  issue,
+  projectTags,
+  issueTags,
+  comments,
+  mutationPending,
+  mutationError,
+  onRetryIssue,
+  onRetryTags,
+  onRetryComments,
+  onUpdateIssue,
+  onCreateTag,
+  onAttachTag,
+  onDetachTag,
+  onCreateComment,
+  onUpdateComment,
+  onDeleteComment,
+}: IssueDetailProps) {
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [status, setStatus] = useState('todo')
+  const [priority, setPriority] = useState('medium')
+  const [assigneeId, setAssigneeId] = useState('')
+  const [newTagName, setNewTagName] = useState('')
+  const [newTagColor, setNewTagColor] = useState('#3b82f6')
+  const [selectedTagId, setSelectedTagId] = useState('')
+  const [commentBody, setCommentBody] = useState('')
+
+  useEffect(() => {
+    if (!issue.data) return
+    // Server reloads are source of truth after mutations; reset draft fields to the latest issue.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTitle(issue.data.title)
+    setDescription(issue.data.description)
+    setStatus(issue.data.status)
+    setPriority(issue.data.priority)
+    setAssigneeId(issue.data.assignee_id)
+  }, [issue.data])
+
+  const availableTags = useMemo(() => {
+    const attachedTags = Array.isArray(issueTags.data) ? issueTags.data : []
+    const allTags = Array.isArray(projectTags.data) ? projectTags.data : []
+    const attached = new Set(attachedTags.map((tag) => tag.id))
+    return allTags.filter((tag) => !attached.has(tag.id))
+  }, [issueTags.data, projectTags.data])
+
+  useEffect(() => {
+    if (!availableTags.some((tag) => tag.id === selectedTagId)) {
+      // Keep the attach select on a valid server-backed option as tags reload.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedTagId(availableTags[0]?.id ?? '')
+    }
+  }, [availableTags, selectedTagId])
+
   if (issue.status === 'loading') {
     return (
       <main className="flex-1 bg-zinc-950 overflow-y-auto">
@@ -46,15 +239,7 @@ export default function IssueDetail({ issue, onRetry }: IssueDetailProps) {
     return (
       <main className="flex-1 bg-zinc-950 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-8 py-6">
-          <p className="text-sm text-red-300">Issue failed to load</p>
-          {issue.error && <p className="mt-1 text-sm text-zinc-500">{issue.error}</p>}
-          <button
-            type="button"
-            onClick={onRetry}
-            className="mt-3 text-sm font-medium text-zinc-200 hover:text-white"
-          >
-            Retry
-          </button>
+          <SectionError title="Issue failed to load" error={issue.error} onRetry={onRetryIssue} />
         </div>
       </main>
     )
@@ -72,7 +257,7 @@ export default function IssueDetail({ issue, onRetry }: IssueDetailProps) {
     <main className="flex-1 bg-zinc-950 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-8 py-6">
         <div className="mb-6">
-          <div className="flex items-center gap-3 mb-2">
+          <div className="mb-2 flex flex-wrap items-center gap-3">
             <span className={`${labelStyle} font-mono text-zinc-500`}>
               {issue.data.identifier}
             </span>
@@ -86,19 +271,221 @@ export default function IssueDetail({ issue, onRetry }: IssueDetailProps) {
           <h2 className="text-xl font-semibold text-zinc-100">
             {issue.data.title}
           </h2>
-          <p className="text-sm text-zinc-500 mt-1">
+          <p className="mt-1 text-sm text-zinc-500">
             Created {formatDate(issue.data.created_at)}
           </p>
         </div>
 
+        {mutationError && (
+          <div className="mb-5 rounded border border-red-900/50 bg-red-950/20 px-3 py-2">
+            <p className="text-sm text-red-300">Update failed</p>
+            <p className="mt-1 text-sm text-zinc-500">{mutationError}</p>
+            <p className="mt-1 text-xs text-zinc-500">Adjust the fields or retry the same action.</p>
+          </div>
+        )}
+
         <section className="mb-8">
-          <h3 className="text-sm font-medium text-zinc-300 mb-3">Description</h3>
-          {issue.data.description ? (
-            <p className="text-sm text-zinc-400 leading-relaxed whitespace-pre-wrap">
-              {issue.data.description}
-            </p>
+          <h3 className="mb-3 text-sm font-medium text-zinc-300">Fields</h3>
+          <div className="space-y-3">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500">Title</span>
+              <input value={title} onChange={(event) => setTitle(event.target.value)} className={inputStyle} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500">Description</span>
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={5}
+                className={inputStyle}
+              />
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Status</span>
+                <select value={status} onChange={(event) => setStatus(event.target.value)} className={inputStyle}>
+                  <option value="todo">Todo</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="done">Done</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Priority</span>
+                <select value={priority} onChange={(event) => setPriority(event.target.value)} className={inputStyle}>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Assignee</span>
+                <input value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)} className={inputStyle} />
+              </label>
+            </div>
+            <button
+              type="button"
+              disabled={mutationPending || title.trim() === ''}
+              onClick={() => {
+                void onUpdateIssue({
+                  title,
+                  description,
+                  status,
+                  priority,
+                  assignee_id: assigneeId,
+                }).catch(() => undefined)
+              }}
+              className={buttonStyle}
+            >
+              Save Fields
+            </button>
+          </div>
+        </section>
+
+        <section className="mb-8">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium text-zinc-300">Tags</h3>
+            {(projectTags.status === 'loading' || issueTags.status === 'loading') && (
+              <span className="text-xs text-zinc-500">Loading tags...</span>
+            )}
+          </div>
+          {(projectTags.status === 'error' || issueTags.status === 'error') ? (
+            <SectionError
+              title="Tags failed to load"
+              error={projectTags.error ?? issueTags.error}
+              onRetry={onRetryTags}
+            />
           ) : (
-            <p className="text-sm text-zinc-500">No description</p>
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                {issueTags.data.length === 0 && <p className="text-sm text-zinc-500">No tags attached</p>}
+                {issueTags.data.map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="inline-flex items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-sm text-zinc-300"
+                  >
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color || '#71717a' }} />
+                    {tag.name}
+                    <button
+                      type="button"
+                      disabled={mutationPending}
+                      onClick={() => {
+                        void onDetachTag(tag.id).catch(() => undefined)
+                      }}
+                      className="text-zinc-500 hover:text-red-200"
+                      aria-label={`Detach ${tag.name}`}
+                    >
+                      x
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={newTagName}
+                  onChange={(event) => setNewTagName(event.target.value)}
+                  placeholder="New tag"
+                  className={inputStyle}
+                />
+                <input
+                  type="color"
+                  value={newTagColor}
+                  onChange={(event) => setNewTagColor(event.target.value)}
+                  aria-label="Tag color"
+                  className="h-10 w-14 rounded border border-zinc-800 bg-zinc-950 p-1"
+                />
+                <button
+                  type="button"
+                  disabled={mutationPending || newTagName.trim() === ''}
+                  onClick={async () => {
+                    try {
+                      await onCreateTag(newTagName, newTagColor)
+                      setNewTagName('')
+                    } catch {
+                      // Parent renders the recoverable mutation error.
+                    }
+                  }}
+                  className={buttonStyle}
+                >
+                  Create
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <select
+                  value={selectedTagId}
+                  onChange={(event) => setSelectedTagId(event.target.value)}
+                  disabled={availableTags.length === 0}
+                  className={inputStyle}
+                >
+                  {availableTags.length === 0 ? (
+                    <option value="">No available tags</option>
+                  ) : (
+                    availableTags.map((tag) => (
+                      <option key={tag.id} value={tag.id}>
+                        {tag.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <button
+                  type="button"
+                  disabled={mutationPending || selectedTagId === ''}
+                  onClick={() => {
+                    void onAttachTag(selectedTagId).catch(() => undefined)
+                  }}
+                  className={buttonStyle}
+                >
+                  Attach
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium text-zinc-300">Comments</h3>
+            {comments.status === 'loading' && <span className="text-xs text-zinc-500">Loading comments...</span>}
+          </div>
+          {comments.status === 'error' ? (
+            <SectionError title="Comments failed to load" error={comments.error} onRetry={onRetryComments} />
+          ) : (
+            <div className="space-y-3">
+              {comments.data.length === 0 && <p className="text-sm text-zinc-500">No comments yet</p>}
+              {comments.data.map((comment) => (
+                <CommentItem
+                  key={comment.id}
+                  comment={comment}
+                  disabled={mutationPending}
+                  onUpdate={onUpdateComment}
+                  onDelete={onDeleteComment}
+                />
+              ))}
+              <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3">
+                <textarea
+                  value={commentBody}
+                  onChange={(event) => setCommentBody(event.target.value)}
+                  rows={3}
+                  placeholder="Add a comment"
+                  className={inputStyle}
+                />
+                <button
+                  type="button"
+                  disabled={mutationPending || commentBody.trim() === ''}
+                  onClick={async () => {
+                    try {
+                      await onCreateComment(commentBody)
+                      setCommentBody('')
+                    } catch {
+                      // Parent renders the recoverable mutation error.
+                    }
+                  }}
+                  className={`mt-2 ${buttonStyle}`}
+                >
+                  Add Comment
+                </button>
+              </div>
+            </div>
           )}
         </section>
       </div>
