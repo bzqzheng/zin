@@ -285,6 +285,52 @@ describe('App', () => {
     })
   })
 
+  it('keeps reloaded issue detail visible when the issue list reload is slow after save', async () => {
+    let issueState = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    let issueListCalls = 0
+    const postUpdateIssues = deferred<Issue[]>()
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') {
+        issueListCalls += 1
+        if (issueListCalls === 1) return Promise.resolve([issueState])
+        return postUpdateIssues.promise
+      }
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body))
+          issueState = { ...issueState, ...body, updated_at: '2026-05-02T16:00:00Z' }
+          return Promise.resolve(issueState)
+        }
+        return Promise.resolve(issueState)
+      }
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([])
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Saved title' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Fields' }))
+
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/issues/issue-alpha',
+        expect.objectContaining({ method: 'PUT' }),
+      )
+    })
+
+    postUpdateIssues.resolve([issueState])
+
+    expect(await screen.findByRole('heading', { name: 'Saved title' })).toBeVisible()
+    expect(screen.queryByText('Loading issue...')).not.toBeInTheDocument()
+  })
+
   it('ignores stale mutation reloads after selecting another issue', async () => {
     let alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
     const betaIssue = makeIssue({
