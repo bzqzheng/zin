@@ -41,16 +41,5 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }
-  },
-  "plugins": {
-    "shell": {
-      "sidecar": true,
-      "scope": [
-        {
-          "name": "daemon",
-          "sidecar": true
-        }
-      ]
-    }
   }
 }
