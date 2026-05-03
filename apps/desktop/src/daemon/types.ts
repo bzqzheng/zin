@@ -56,6 +56,29 @@ export interface IssueComment {
   updated_at: string
 }
 
+export interface IssueAssignment {
+  id: string
+  issue_id: string
+  agent_id: string
+  agent_name: string
+  runtime_id: string
+  runtime_name: string
+  runtime_status: string
+  requested_by: string
+  source_type: 'issue_detail' | 'comment'
+  source_id: string
+  client_request_id: string
+  status: 'queued' | 'accepted' | 'completed' | 'failed' | 'cancelled'
+  dedupe_key: string
+  requested_at: string
+  accepted_at: string | null
+  completed_at: string | null
+  failed_at: string | null
+  cancelled_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface IssueActivity {
   id: string
   issue_id: string

@@ -8,6 +8,7 @@ export type {
   Runtime,
   Tag,
   IssueComment,
+  IssueAssignment,
   IssueActivity,
   RuntimeKind,
   RuntimeHealthStatus,

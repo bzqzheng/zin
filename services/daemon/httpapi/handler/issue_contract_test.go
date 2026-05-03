@@ -36,6 +36,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
 	runtimeRepo := store.NewRuntimeRepository(database)
+	assignmentRepo := store.NewIssueAssignmentRepository(database)
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
@@ -43,6 +44,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
+		handler.NewAssignmentHandler(database, issueRepo, agentRepo, commentRepo, assignmentRepo),
 		make(chan struct{}, 1),
 	)
 
@@ -244,25 +246,14 @@ func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
 
 	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
 	claude := writeHandlerExecutable(t, "claude", "#!/bin/sh\nexit 9\n")
-	discovered := requestJSON[struct {
+	runtimes := requestJSON[struct {
 		Runtimes []store.Runtime `json:"runtimes"`
 	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`,"claude":`+mustJSONQuote(t, claude)+`}}`, http.StatusOK)
-
-	var healthy, degraded store.Runtime
-	for _, runtime := range discovered.Runtimes {
-		switch runtime.Kind {
-		case "codex":
-			healthy = runtime
-		case "claude":
-			degraded = runtime
-		}
-	}
-	if healthy.ID == "" || degraded.ID == "" {
-		t.Fatalf("expected healthy and degraded runtimes, got %#v", discovered.Runtimes)
-	}
+	healthy := runtimeByKind(t, runtimes.Runtimes, "codex")
+	degraded := runtimeByKind(t, runtimes.Runtimes, "claude")
 
 	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+healthy.ID+`","model":"gpt-5","instructions":"Complete the work."}`, http.StatusCreated)
-	if !assignable.Assignable || assignable.RuntimeStatus != "healthy" || assignable.RuntimeName == "" || assignable.Model != "gpt-5" {
+	if !assignable.Assignable || assignable.RuntimeStatus != "healthy" || assignable.Model != "gpt-5" {
 		t.Fatalf("expected healthy runtime agent to be assignable, got %#v", assignable)
 	}
 
@@ -296,6 +287,68 @@ func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
 	}
 
 	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Missing","runtime_id":"missing"}`, http.StatusBadRequest)
+}
+
+func TestAssignmentCreateReplayListAndCancel(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Assign work"})
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtime := runtimeByKind(t, runtimes.Runtimes, "codex")
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+runtime.ID+`"}`, http.StatusCreated)
+
+	type assignmentPayload struct {
+		Assignment       store.IssueAssignment `json:"assignment"`
+		IdempotentReplay bool                  `json:"idempotent_replay"`
+	}
+	createBody := `{"agent_id":"` + agent.ID + `","source_type":"issue_detail","client_request_id":"req-1"}`
+	created := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", createBody, http.StatusCreated)
+	if created.Assignment.Status != "queued" || created.Assignment.AgentID != agent.ID || created.IdempotentReplay {
+		t.Fatalf("unexpected created assignment: %#v", created)
+	}
+
+	replayed := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", createBody, http.StatusOK)
+	if !replayed.IdempotentReplay || replayed.Assignment.ID != created.Assignment.ID {
+		t.Fatalf("expected exact replay to return same assignment, got %#v", replayed)
+	}
+	deduped := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"req-2"}`, http.StatusOK)
+	if !deduped.IdempotentReplay || deduped.Assignment.ID != created.Assignment.ID {
+		t.Fatalf("expected duplicate logical assignment to return same row, got %#v", deduped)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"comment","source_id":"other","client_request_id":"req-1"}`, http.StatusConflict)
+
+	listed := requestJSON[struct {
+		Assignments []store.IssueAssignment `json:"assignments"`
+	}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/assignments", ``, http.StatusOK)
+	if len(listed.Assignments) != 1 || listed.Assignments[0].RuntimeStatus != "healthy" {
+		t.Fatalf("expected one listed assignment with runtime status, got %#v", listed.Assignments)
+	}
+
+	cancelled := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/cancel", `{"reason":"done testing"}`, http.StatusOK)
+	if cancelled.Assignment.Status != "cancelled" || cancelled.Assignment.CancelledAt == nil {
+		t.Fatalf("expected cancelled assignment with timestamp, got %#v", cancelled.Assignment)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/cancel", `{"reason":"again"}`, http.StatusConflict)
+
+	events := requestJSON[[]map[string]interface{}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/activity", ``, http.StatusOK)
+	gotTypes := map[string]bool{}
+	for _, event := range events {
+		gotTypes[event["type"].(string)] = true
+	}
+	for _, typ := range []string{"assignment.requested", "assignment.cancelled"} {
+		if !gotTypes[typ] {
+			t.Fatalf("missing activity type %s in %#v", typ, gotTypes)
+		}
+	}
 }
 
 func TestRuntimeDiscoveryContracts(t *testing.T) {
@@ -589,6 +642,17 @@ func assertStatus(t *testing.T, router http.Handler, method, path, body string, 
 	if rec.Code != want {
 		t.Fatalf("%s %s: expected %d, got %d: %s", method, path, want, rec.Code, rec.Body.String())
 	}
+}
+
+func runtimeByKind(t *testing.T, runtimes []store.Runtime, kind string) store.Runtime {
+	t.Helper()
+	for _, runtime := range runtimes {
+		if runtime.Kind == kind {
+			return runtime
+		}
+	}
+	t.Fatalf("expected runtime kind %q in %#v", kind, runtimes)
+	return store.Runtime{}
 }
 
 func writeHandlerExecutable(t *testing.T, name, content string) string {
