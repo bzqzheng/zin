@@ -36,6 +36,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
 	runtimeRepo := store.NewRuntimeRepository(database)
+	assignmentRepo := store.NewIssueAssignmentRepository(database)
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
@@ -43,6 +44,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
+		handler.NewAssignmentHandler(assignmentRepo),
 		make(chan struct{}, 1),
 	)
 
@@ -237,67 +239,6 @@ func TestErrorEnvelopeAlwaysIncludesDetails(t *testing.T) {
 	}
 }
 
-func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
-	router, projectRepo, _, cleanup := setupRouter(t)
-	defer cleanup()
-	t.Setenv("PATH", t.TempDir())
-
-	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
-	claude := writeHandlerExecutable(t, "claude", "#!/bin/sh\nexit 9\n")
-	discovered := requestJSON[struct {
-		Runtimes []store.Runtime `json:"runtimes"`
-	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`,"claude":`+mustJSONQuote(t, claude)+`}}`, http.StatusOK)
-
-	var healthy, degraded store.Runtime
-	for _, runtime := range discovered.Runtimes {
-		switch runtime.Kind {
-		case "codex":
-			healthy = runtime
-		case "claude":
-			degraded = runtime
-		}
-	}
-	if healthy.ID == "" || degraded.ID == "" {
-		t.Fatalf("expected healthy and degraded runtimes, got %#v", discovered.Runtimes)
-	}
-
-	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+healthy.ID+`","model":"gpt-5","instructions":"Complete the work."}`, http.StatusCreated)
-	if !assignable.Assignable || assignable.RuntimeStatus != "healthy" || assignable.RuntimeName == "" || assignable.Model != "gpt-5" {
-		t.Fatalf("expected healthy runtime agent to be assignable, got %#v", assignable)
-	}
-
-	blocked := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Smith","role":"reviewer","runtime_id":"`+degraded.ID+`"}`, http.StatusCreated)
-	if blocked.Assignable || !strings.Contains(blocked.AssignableReason, "degraded") {
-		t.Fatalf("expected degraded runtime agent to be gated with explicit reason, got %#v", blocked)
-	}
-
-	filtered := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
-	if len(filtered) != 1 || filtered[0].ID != assignable.ID {
-		t.Fatalf("expected assignable filter to return only healthy runtime agent, got %#v", filtered)
-	}
-
-	project, err := projectRepo.Create("Assignments", "")
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	issue := postIssue(t, router, project.ID, map[string]string{"title": "Gate server-side assignment"})
-	blockedAssignment := requestJSON[map[string]map[string]string](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+blocked.ID+`"}`, http.StatusBadRequest)
-	if blockedAssignment["error"]["code"] != "ASSIGNEE_NOT_ASSIGNABLE" || !strings.Contains(blockedAssignment["error"]["details"], "degraded") {
-		t.Fatalf("expected explicit assignability error, got %#v", blockedAssignment)
-	}
-	assigned := requestJSON[store.Issue](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+assignable.ID+`"}`, http.StatusOK)
-	if assigned.AssigneeID != assignable.ID {
-		t.Fatalf("expected assignable agent to be accepted, got %#v", assigned)
-	}
-
-	updated := requestJSON[store.Agent](t, router, http.MethodPut, "/api/agents/"+blocked.ID, `{"runtime_id":"`+healthy.ID+`","model":"claude-sonnet","instructions":"Review carefully."}`, http.StatusOK)
-	if !updated.Assignable || updated.Model != "claude-sonnet" || updated.Instructions != "Review carefully." {
-		t.Fatalf("expected update to bind healthy runtime and persist config, got %#v", updated)
-	}
-
-	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Missing","runtime_id":"missing"}`, http.StatusBadRequest)
-}
-
 func TestRuntimeDiscoveryContracts(t *testing.T) {
 	router, _, _, cleanup := setupRouter(t)
 	defer cleanup()
@@ -431,6 +372,123 @@ func TestRuntimeUpdatePersistsKindMismatch(t *testing.T) {
 	t.Fatalf("expected updated runtime in list: %#v", listed.Runtimes)
 }
 
+func TestAssignmentCreateReplayConflictAndCancel(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Assignable work"})
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtimeID := runtimeIDByKind(t, discovered.Runtimes, "codex")
+
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Builder","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusCreated)
+	otherAgent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Reviewer","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusCreated)
+
+	assignableAgents := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
+	if len(assignableAgents) != 2 {
+		t.Fatalf("expected assignable filtered agent list, got %#v", assignableAgents)
+	}
+
+	first := requestJSON[struct {
+		Assignment       map[string]interface{} `json:"assignment"`
+		IdempotentReplay bool                   `json:"idempotent_replay"`
+	}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"req-1"}`, http.StatusCreated)
+	if first.IdempotentReplay {
+		t.Fatalf("first create should not be replay: %#v", first)
+	}
+	assignmentID, _ := first.Assignment["id"].(string)
+	if assignmentID == "" || first.Assignment["status"] != "queued" {
+		t.Fatalf("unexpected assignment response: %#v", first.Assignment)
+	}
+	if _, leaked := first.Assignment["request_fingerprint"]; leaked {
+		t.Fatalf("assignment response must not expose request_fingerprint: %#v", first.Assignment)
+	}
+
+	replay := requestJSON[struct {
+		Assignment       map[string]interface{} `json:"assignment"`
+		IdempotentReplay bool                   `json:"idempotent_replay"`
+	}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"req-1"}`, http.StatusOK)
+	if !replay.IdempotentReplay || replay.Assignment["id"] != assignmentID {
+		t.Fatalf("expected exact replay of assignment %s, got %#v", assignmentID, replay)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+otherAgent.ID+`","source_type":"issue_detail","client_request_id":"req-1"}`, http.StatusConflict)
+
+	assignments := requestJSON[struct {
+		Assignments []map[string]interface{} `json:"assignments"`
+	}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/assignments", ``, http.StatusOK)
+	if len(assignments.Assignments) != 1 || assignments.Assignments[0]["id"] != assignmentID {
+		t.Fatalf("expected one durable assignment, got %#v", assignments)
+	}
+
+	assertStatus(t, router, http.MethodPost, "/api/assignments/missing/cancel", `{}`, http.StatusNotFound)
+	cancelled := requestJSON[struct {
+		Assignment map[string]interface{} `json:"assignment"`
+	}](t, router, http.MethodPost, "/api/assignments/"+assignmentID+"/cancel", `{"reason":"Changed direction"}`, http.StatusOK)
+	if cancelled.Assignment["status"] != "cancelled" {
+		t.Fatalf("expected cancelled assignment, got %#v", cancelled)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/assignments/"+assignmentID+"/cancel", `{}`, http.StatusConflict)
+
+	events := requestJSON[[]map[string]interface{}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/activity", ``, http.StatusOK)
+	var requestedEvents, cancelledEvents int
+	for _, event := range events {
+		switch event["type"] {
+		case "assignment.requested":
+			requestedEvents++
+		case "assignment.cancelled":
+			cancelledEvents++
+		}
+	}
+	if requestedEvents != 1 || cancelledEvents != 1 {
+		t.Fatalf("expected one requested and one cancelled activity, got requested=%d cancelled=%d events=%#v", requestedEvents, cancelledEvents, events)
+	}
+}
+
+func TestAssignmentGateFailures(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignment gates", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Gate work"})
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtimeID := runtimeIDByKind(t, discovered.Runtimes, "codex")
+
+	unassignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Dormant","runtime_id":"`+runtimeID+`","is_assignable":false}`, http.StatusCreated)
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+unassignable.ID+`","source_type":"issue_detail","client_request_id":"req-gate-1"}`, http.StatusUnprocessableEntity)
+	assertStatus(t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+unassignable.ID+`"}`, http.StatusBadRequest)
+
+	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Ready","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusCreated)
+	updated := requestJSON[store.Issue](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+assignable.ID+`"}`, http.StatusOK)
+	if updated.AssigneeID != assignable.ID {
+		t.Fatalf("expected assignable assignee to persist, got %#v", updated)
+	}
+
+	degraded := writeHandlerExecutable(t, "codex", "#!/bin/sh\nexit 9\n")
+	runtime := requestJSON[struct {
+		Runtime store.Runtime `json:"runtime"`
+	}](t, router, http.MethodPut, "/api/runtimes/"+runtimeID, `{"binary_path":`+mustJSONQuote(t, degraded)+`}`, http.StatusOK)
+	if runtime.Runtime.HealthStatus != "degraded" {
+		t.Fatalf("expected degraded runtime, got %#v", runtime.Runtime)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Bad","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusUnprocessableEntity)
+}
+
 func TestInteractionEndpointContracts(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()
@@ -517,6 +575,20 @@ func TestInteractionEndpointContracts(t *testing.T) {
 			t.Fatalf("missing activity type %s in %#v", typ, gotTypes)
 		}
 	}
+}
+
+func runtimeIDByKind(t *testing.T, runtimes []store.Runtime, kind string) string {
+	t.Helper()
+	for _, runtime := range runtimes {
+		if runtime.Kind == kind {
+			if runtime.ID == "" {
+				t.Fatalf("runtime %s has empty id: %#v", kind, runtime)
+			}
+			return runtime.ID
+		}
+	}
+	t.Fatalf("runtime %s not found in %#v", kind, runtimes)
+	return ""
 }
 
 func TestInteractionNotFoundAndValidationPaths(t *testing.T) {

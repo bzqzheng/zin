@@ -40,9 +40,18 @@ examples/
 scripts/
 ```
 
+## Regression QA
+
+Run the Phase 3 smoke suite from the repo root:
+
+```sh
+./scripts/qa-smoke.sh
+```
+
+The script uses temporary test data, runs daemon contracts, desktop unit/integration tests, lint, build, and a headless Playwright flow against a mocked daemon API.
+
 ## License
 
 Zin is currently source-available under a restrictive draft license. See `LICENSE`.
 
 The license is intentionally conservative while the project is pre-alpha. It may change before public release.
-

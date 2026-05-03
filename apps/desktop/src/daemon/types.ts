@@ -12,12 +12,9 @@ export interface Agent {
   role: string
   status: string
   runtime_id: string
-  runtime_name: string
-  runtime_status: string
-  model: string
+  model_hint: string
   instructions: string
-  assignable: boolean
-  assignable_reason: string
+  is_assignable: boolean
   created_at: string
   updated_at: string
 }
@@ -82,8 +79,6 @@ export interface RuntimeRecord {
   updated_at: string
 }
 
-export type Runtime = RuntimeRecord
-
 export interface RuntimeListResponse {
   runtimes: RuntimeRecord[]
 }
@@ -101,4 +96,37 @@ export interface RuntimeDiscoveryResponse {
 
 export interface RuntimeMutationResponse {
   runtime: Partial<RuntimeRecord> & { id: string }
+}
+
+export type AssignmentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface IssueAssignment {
+  id: string
+  issue_id: string
+  agent_id: string | null
+  requested_by: string
+  status: AssignmentStatus
+  source_type: string
+  source_id: string
+  dedupe_key: string
+  requested_at: string
+  accepted_at?: string
+  completed_at?: string
+  failed_at?: string
+  cancelled_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AssignmentListResponse {
+  assignments: IssueAssignment[]
+}
+
+export interface CreateAssignmentResponse {
+  assignment: IssueAssignment
+  idempotent_replay: boolean
+}
+
+export interface AssignmentMutationResponse {
+  assignment: IssueAssignment
 }

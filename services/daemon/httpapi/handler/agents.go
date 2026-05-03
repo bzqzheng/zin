@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -22,14 +21,28 @@ type createAgentRequest struct {
 	Name         string `json:"name"`
 	Role         string `json:"role"`
 	RuntimeID    string `json:"runtime_id"`
-	Model        string `json:"model"`
+	ModelHint    string `json:"model_hint"`
 	Instructions string `json:"instructions"`
+	IsAssignable bool   `json:"is_assignable"`
 }
 
 func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	assignableOnly := r.URL.Query().Get("assignable") == "true"
-	agents, err := h.repo.List(assignableOnly)
+	var filters store.AgentFilters
+	if raw := r.URL.Query().Get("assignable"); raw != "" {
+		switch raw {
+		case "true":
+			value := true
+			filters.Assignable = &value
+		case "false":
+			value := false
+			filters.Assignable = &value
+		default:
+			response.Error(w, http.StatusBadRequest, "INVALID_QUERY_PARAM", "assignable must be true or false", "")
+			return
+		}
+	}
+	agents, err := h.repo.ListWithFilters(filters)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to list agents", err.Error())
 		return
@@ -51,11 +64,17 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "name is required", "")
 		return
 	}
-	if err := h.validateRuntime(req.RuntimeID); err != nil {
-		response.Error(w, http.StatusBadRequest, "RUNTIME_NOT_FOUND", "runtime_id does not reference a known runtime", err.Error())
+	if !h.validateAgentRuntime(w, req.RuntimeID, req.IsAssignable) {
 		return
 	}
-	agent, err := h.repo.Create(req.Name, req.Role, req.RuntimeID, req.Model, req.Instructions)
+	agent, err := h.repo.CreateWithInput(store.CreateAgentInput{
+		Name:         req.Name,
+		Role:         req.Role,
+		RuntimeID:    strings.TrimSpace(req.RuntimeID),
+		ModelHint:    req.ModelHint,
+		Instructions: req.Instructions,
+		IsAssignable: req.IsAssignable,
+	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to create agent", err.Error())
 		return
@@ -83,8 +102,9 @@ type updateAgentRequest struct {
 	Role         *string `json:"role"`
 	Status       *string `json:"status"`
 	RuntimeID    *string `json:"runtime_id"`
-	Model        *string `json:"model"`
+	ModelHint    *string `json:"model_hint"`
 	Instructions *string `json:"instructions"`
+	IsAssignable *bool   `json:"is_assignable"`
 }
 
 func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -115,26 +135,23 @@ func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 		agent.Status = *req.Status
 	}
 	if req.RuntimeID != nil {
-		if err := h.validateRuntime(*req.RuntimeID); err != nil {
-			response.Error(w, http.StatusBadRequest, "RUNTIME_NOT_FOUND", "runtime_id does not reference a known runtime", err.Error())
-			return
-		}
-		agent.RuntimeID = *req.RuntimeID
+		agent.RuntimeID = strings.TrimSpace(*req.RuntimeID)
 	}
-	if req.Model != nil {
-		agent.Model = *req.Model
+	if req.ModelHint != nil {
+		agent.ModelHint = *req.ModelHint
 	}
 	if req.Instructions != nil {
 		agent.Instructions = *req.Instructions
 	}
+	if req.IsAssignable != nil {
+		agent.IsAssignable = *req.IsAssignable
+	}
+	if !h.validateAgentRuntime(w, agent.RuntimeID, agent.IsAssignable) {
+		return
+	}
 
 	if err := h.repo.Update(agent); err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to update agent", err.Error())
-		return
-	}
-	agent, err = h.repo.GetByID(id)
-	if err != nil {
-		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to get agent", err.Error())
 		return
 	}
 	response.JSON(w, http.StatusOK, agent)
@@ -163,16 +180,27 @@ func (h *AgentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *AgentHandler) validateRuntime(runtimeID string) error {
+func (h *AgentHandler) validateAgentRuntime(w http.ResponseWriter, runtimeID string, isAssignable bool) bool {
+	runtimeID = strings.TrimSpace(runtimeID)
 	if runtimeID == "" {
-		return nil
+		if isAssignable {
+			response.Error(w, http.StatusUnprocessableEntity, "RUNTIME_NOT_HEALTHY", "assignable agents require a healthy runtime", "")
+			return false
+		}
+		return true
 	}
 	runtime, err := h.runtimeRepo.GetByID(runtimeID)
 	if err != nil {
-		return err
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to get runtime", err.Error())
+		return false
 	}
 	if runtime == nil {
-		return fmt.Errorf("runtime %q not found", runtimeID)
+		response.Error(w, http.StatusNotFound, "RUNTIME_NOT_FOUND", "runtime not found", "")
+		return false
 	}
-	return nil
+	if isAssignable && runtime.HealthStatus != "healthy" {
+		response.Error(w, http.StatusUnprocessableEntity, "RUNTIME_NOT_HEALTHY", "assignable agents require a healthy runtime", "")
+		return false
+	}
+	return true
 }

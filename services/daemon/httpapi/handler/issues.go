@@ -164,12 +164,8 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 				response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to verify assignee", err.Error())
 				return
 			}
-			if agent == nil {
-				response.Error(w, http.StatusBadRequest, "ASSIGNEE_NOT_ASSIGNABLE", "assignee is not assignable", "Agent not found.")
-				return
-			}
-			if !agent.Assignable {
-				response.Error(w, http.StatusBadRequest, "ASSIGNEE_NOT_ASSIGNABLE", "assignee is not assignable", agent.AssignableReason)
+			if agent == nil || !agent.IsAssignable {
+				response.Error(w, http.StatusBadRequest, "ASSIGNEE_NOT_ASSIGNABLE", "assignee is not assignable", "")
 				return
 			}
 		}

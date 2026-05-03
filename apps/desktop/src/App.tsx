@@ -7,9 +7,13 @@ import { useDaemon } from './daemon'
 import type {
   Issue,
   IssueActivity,
+  IssueAssignment,
   IssueComment,
-  Agent,
   Project,
+  Agent,
+  AssignmentListResponse,
+  AssignmentMutationResponse,
+  CreateAssignmentResponse,
   RuntimeDiscoveryResponse,
   RuntimeDiscoverySummary,
   RuntimeListResponse,
@@ -104,6 +108,18 @@ const emptyLoadedActivity: ResourceState<IssueActivity[]> = {
   error: null,
 }
 
+const emptyAssignments: ResourceState<IssueAssignment[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedAssignments: ResourceState<IssueAssignment[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
 const emptyAgents: ResourceState<Agent[]> = {
   status: 'idle',
   data: [],
@@ -164,9 +180,11 @@ export default function App() {
   const [issueTags, setIssueTags] = useState<ResourceState<Tag[]>>(emptyIssueTags)
   const [comments, setComments] = useState<ResourceState<IssueComment[]>>(emptyComments)
   const [activity, setActivity] = useState<ResourceState<IssueActivity[]>>(emptyActivity)
+  const [assignments, setAssignments] = useState<ResourceState<IssueAssignment[]>>(emptyAssignments)
   const [agents, setAgents] = useState<ResourceState<Agent[]>>(emptyAgents)
   const [runtimes, setRuntimes] = useState<ResourceState<RuntimeRecord[]>>(emptyRuntimes)
-  const [runtimeDiscoverySummary, setRuntimeDiscoverySummary] = useState<RuntimeDiscoverySummary | null>(null)
+  const [runtimeDiscoverySummary, setRuntimeDiscoverySummary] =
+    useState<RuntimeDiscoverySummary | null>(null)
   const [preferredProjectId, setPreferredProjectId] = useState<string | null>(null)
   const [preferredIssueId, setPreferredIssueId] = useState<string | null>(null)
   const [activeView, setActiveView] = useState<'issues' | 'settings'>('issues')
@@ -184,38 +202,31 @@ export default function App() {
 
   const selectedIssueId =
     issues.status === 'success'
-      ? (issues.data.find((issue) => issue.id === preferredIssueId)?.id ?? issues.data[0]?.id ?? null)
+      ? (issues.data.find((issue) => issue.id === preferredIssueId)?.id ??
+        issues.data[0]?.id ??
+        null)
       : preferredIssueId
 
   const visibleIssues =
-    projects.status === 'success' && !selectedProjectId
-      ? emptyLoadedIssues
-      : issues
+    projects.status === 'success' && !selectedProjectId ? emptyLoadedIssues : issues
 
   const visibleIssueDetail =
-    visibleIssues.status === 'success' && !selectedIssueId
-      ? emptyLoadedIssueDetail
-      : issueDetail
+    visibleIssues.status === 'success' && !selectedIssueId ? emptyLoadedIssueDetail : issueDetail
 
   const visibleProjectTags =
-    projects.status === 'success' && !selectedProjectId
-      ? emptyLoadedProjectTags
-      : projectTags
+    projects.status === 'success' && !selectedProjectId ? emptyLoadedProjectTags : projectTags
 
   const visibleIssueTags =
-    visibleIssues.status === 'success' && !selectedIssueId
-      ? emptyLoadedIssueTags
-      : issueTags
+    visibleIssues.status === 'success' && !selectedIssueId ? emptyLoadedIssueTags : issueTags
 
   const visibleComments =
-    visibleIssues.status === 'success' && !selectedIssueId
-      ? emptyLoadedComments
-      : comments
+    visibleIssues.status === 'success' && !selectedIssueId ? emptyLoadedComments : comments
 
   const visibleActivity =
-    visibleIssues.status === 'success' && !selectedIssueId
-      ? emptyLoadedActivity
-      : activity
+    visibleIssues.status === 'success' && !selectedIssueId ? emptyLoadedActivity : activity
+
+  const visibleAssignments =
+    visibleIssues.status === 'success' && !selectedIssueId ? emptyLoadedAssignments : assignments
 
   const fetchProjects = useCallback(() => fetchApi<Project[]>('/api/projects'), [fetchApi])
 
@@ -249,6 +260,11 @@ export default function App() {
     [fetchApi],
   )
 
+  const fetchAssignments = useCallback(
+    (issueId: string) => fetchApi<AssignmentListResponse>(`/api/issues/${issueId}/assignments`),
+    [fetchApi],
+  )
+
   const fetchAgents = useCallback(() => fetchApi<Agent[]>('/api/agents'), [fetchApi])
 
   const fetchRuntimes = useCallback(
@@ -260,6 +276,7 @@ export default function App() {
     setIssueTags(loaded ? emptyLoadedIssueTags : emptyIssueTags)
     setComments(loaded ? emptyLoadedComments : emptyComments)
     setActivity(loaded ? emptyLoadedActivity : emptyActivity)
+    setAssignments(loaded ? emptyLoadedAssignments : emptyAssignments)
   }, [])
 
   const resetWorkspaceCache = useCallback(() => {
@@ -311,7 +328,9 @@ export default function App() {
       setProjects({ status: 'success', data, error: null })
       setIssues(data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedIssues)
       setIssueDetail(emptyLoadedIssueDetail)
-      setProjectTags(data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedProjectTags)
+      setProjectTags(
+        data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedProjectTags,
+      )
       resetIssueInteractions(data.length === 0)
     } catch (err) {
       setProjects({ status: 'error', data: [], error: errorMessage(err) })
@@ -384,7 +403,11 @@ export default function App() {
         }
       } catch (err) {
         if (sequence === issueLoadSeqRef.current) {
-          setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
+          setIssueDetail({
+            status: 'error',
+            data: null,
+            error: errorMessage(err),
+          })
         }
       }
     },
@@ -469,6 +492,55 @@ export default function App() {
     [baseURL, fetchActivity, selectedIssueId],
   )
 
+  const loadAssignments = useCallback(
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
+      if (!baseURL || !issueId) {
+        if (sequence === issueLoadSeqRef.current) {
+          setAssignments(emptyLoadedAssignments)
+        }
+        return
+      }
+
+      if (sequence === issueLoadSeqRef.current) {
+        setAssignments((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
+      try {
+        const data = await fetchAssignments(issueId)
+        if (sequence === issueLoadSeqRef.current) {
+          setAssignments({
+            status: 'success',
+            data: data.assignments,
+            error: null,
+          })
+        }
+      } catch (err) {
+        if (sequence === issueLoadSeqRef.current) {
+          setAssignments({
+            status: 'error',
+            data: [],
+            error: errorMessage(err),
+          })
+        }
+      }
+    },
+    [baseURL, fetchAssignments, selectedIssueId],
+  )
+
+  const loadAgents = useCallback(async () => {
+    if (!baseURL) {
+      setAgents(emptyLoadedAgents)
+      return
+    }
+
+    setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
+    try {
+      const data = await fetchAgents()
+      setAgents({ status: 'success', data, error: null })
+    } catch (err) {
+      setAgents({ status: 'error', data: [], error: errorMessage(err) })
+    }
+  }, [baseURL, fetchAgents])
+
   const loadRuntimes = useCallback(async () => {
     if (!baseURL) {
       setRuntimes(emptyLoadedRuntimes)
@@ -503,15 +575,21 @@ export default function App() {
         loadIssueTags(issueId, sequence),
         loadComments(issueId, sequence),
         loadActivity(issueId, sequence),
+        loadAssignments(issueId, sequence),
+        loadAgents(),
+        loadRuntimes(),
         projectId ? loadProjectTags(projectId) : Promise.resolve(),
       ])
     },
     [
       loadActivity,
+      loadAgents,
+      loadAssignments,
       loadComments,
       loadIssueDetail,
       loadIssueTags,
       loadProjectTags,
+      loadRuntimes,
       resetIssueInteractions,
       selectedIssueId,
       selectedProjectId,
@@ -569,7 +647,10 @@ export default function App() {
           `/api/runtimes/${runtimeId}`,
           jsonRequest('PUT', input),
         )
-        setRuntimes((prev) => ({ ...prev, data: mergeRuntime(prev.data, data.runtime) }))
+        setRuntimes((prev) => ({
+          ...prev,
+          data: mergeRuntime(prev.data, data.runtime),
+        }))
       })
     },
     [fetchApi, runRuntimeMutation],
@@ -582,7 +663,10 @@ export default function App() {
           '/api/runtimes/validate',
           jsonRequest('POST', { runtime_id: runtimeId }),
         )
-        setRuntimes((prev) => ({ ...prev, data: mergeRuntime(prev.data, data.runtime) }))
+        setRuntimes((prev) => ({
+          ...prev,
+          data: mergeRuntime(prev.data, data.runtime),
+        }))
       })
     },
     [fetchApi, runRuntimeMutation],
@@ -608,7 +692,10 @@ export default function App() {
       if (!selectedIssueId || !selectedProjectId) return
 
       await runMutation(async (sequence) => {
-        await fetchApi<Tag[]>(`/api/issues/${selectedIssueId}/tags`, jsonRequest('POST', { name, color }))
+        await fetchApi<Tag[]>(
+          `/api/issues/${selectedIssueId}/tags`,
+          jsonRequest('POST', { name, color }),
+        )
         if (sequence !== issueLoadSeqRef.current) return
         await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
@@ -621,7 +708,10 @@ export default function App() {
       if (!selectedIssueId || !selectedProjectId) return
 
       await runMutation(async (sequence) => {
-        await fetchApi<Tag[]>(`/api/issues/${selectedIssueId}/tags`, jsonRequest('POST', { tag_id: tagId }))
+        await fetchApi<Tag[]>(
+          `/api/issues/${selectedIssueId}/tags`,
+          jsonRequest('POST', { tag_id: tagId }),
+        )
         if (sequence !== issueLoadSeqRef.current) return
         await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
@@ -684,38 +774,78 @@ export default function App() {
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
   )
 
-  const loadAgents = useCallback(async () => {
-    if (!baseURL) {
-      setAgents(emptyLoadedAgents)
-      return
-    }
-    setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
-    try {
-      const data = await fetchAgents()
-      setAgents({ status: 'success', data, error: null })
-    } catch (err) {
-      setAgents({ status: 'error', data: [], error: errorMessage(err) })
-    }
-  }, [baseURL, fetchAgents])
+  const createAssignment = useCallback(
+    async (agentId: string, source: { type: 'issue_detail' | 'comment'; id?: string }) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      const clientRequestId =
+        globalThis.crypto?.randomUUID?.() ??
+        `${selectedIssueId}:${source.type}:${source.id ?? 'issue'}:${agentId}:${Date.now()}`
+
+      await runMutation(async (sequence) => {
+        await fetchApi<CreateAssignmentResponse>(
+          `/api/issues/${selectedIssueId}/assignments`,
+          jsonRequest('POST', {
+            agent_id: agentId,
+            requested_by: 'local-user',
+            source_type: source.type,
+            source_id: source.id ?? selectedIssueId,
+            client_request_id: clientRequestId,
+          }),
+        )
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const cancelAssignment = useCallback(
+    async (assignmentId: string) => {
+      if (!selectedIssueId || !selectedProjectId) return
+
+      await runMutation(async (sequence) => {
+        await fetchApi<AssignmentMutationResponse>(
+          `/api/assignments/${assignmentId}/cancel`,
+          jsonRequest('POST', { reason: 'Cancelled from issue detail' }),
+        )
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
+      })
+    },
+    [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
 
   const createAgent = useCallback(
     async (input: AgentConfigInput) => {
       await runMutation(async () => {
-        await fetchApi<Agent>('/api/agents', jsonRequest('POST', input))
-        await loadAgents()
+        await fetchApi<Agent>(
+          '/api/agents',
+          jsonRequest('POST', {
+            ...input,
+            is_assignable: input.runtime_id !== '',
+          }),
+        )
+        await Promise.all([loadAgents(), loadRuntimes()])
       })
     },
-    [fetchApi, loadAgents, runMutation],
+    [fetchApi, loadAgents, loadRuntimes, runMutation],
   )
 
   const updateAgent = useCallback(
     async (agentId: string, input: AgentConfigInput) => {
       await runMutation(async () => {
-        await fetchApi<Agent>(`/api/agents/${agentId}`, jsonRequest('PUT', input))
-        await loadAgents()
+        await fetchApi<Agent>(
+          `/api/agents/${agentId}`,
+          jsonRequest('PUT', {
+            ...input,
+            is_assignable: input.runtime_id !== '',
+          }),
+        )
+        await Promise.all([loadAgents(), loadRuntimes()])
       })
     },
-    [fetchApi, loadAgents, runMutation],
+    [fetchApi, loadAgents, loadRuntimes, runMutation],
   )
 
   const selectProject = useCallback(
@@ -729,6 +859,8 @@ export default function App() {
       setIssueDetail({ status: 'loading', data: null, error: null })
       setProjectTags({ status: 'loading', data: [], error: null })
       resetIssueInteractions()
+      setAgents({ status: 'loading', data: [], error: null })
+      setRuntimes({ status: 'loading', data: [], error: null })
       setMutationPending(false)
       setMutationError(null)
     },
@@ -742,6 +874,9 @@ export default function App() {
     setIssueTags({ status: 'loading', data: [], error: null })
     setComments({ status: 'loading', data: [], error: null })
     setActivity({ status: 'loading', data: [], error: null })
+    setAssignments({ status: 'loading', data: [], error: null })
+    setAgents({ status: 'loading', data: [], error: null })
+    setRuntimes({ status: 'loading', data: [], error: null })
     setMutationPending(false)
     setMutationError(null)
   }, [])
@@ -762,7 +897,11 @@ export default function App() {
         if (!cancelled) {
           setDaemonStatus('success')
           if (!baseURL) {
-            setProjects((prev) => ({ ...prev, status: 'loading', error: null }))
+            setProjects((prev) => ({
+              ...prev,
+              status: 'loading',
+              error: null,
+            }))
           }
         }
       } catch {
@@ -790,12 +929,20 @@ export default function App() {
         const data = await fetchProjects()
         if (!cancelled) {
           setProjects({ status: 'success', data, error: null })
-          setIssues(data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedIssues)
+          setIssues(
+            data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedIssues,
+          )
           setIssueDetail(emptyLoadedIssueDetail)
           setProjectTags(
             data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedProjectTags,
           )
           resetIssueInteractions(data.length === 0)
+          setAgents(
+            data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedAgents,
+          )
+          setRuntimes(
+            data.length > 0 ? { status: 'loading', data: [], error: null } : emptyLoadedRuntimes,
+          )
         }
       } catch (err) {
         if (!cancelled) {
@@ -804,6 +951,8 @@ export default function App() {
           setIssueDetail(emptyIssueDetail)
           setProjectTags(emptyProjectTags)
           resetIssueInteractions()
+          setAgents(emptyAgents)
+          setRuntimes(emptyRuntimes)
         }
       }
     }
@@ -814,38 +963,6 @@ export default function App() {
       cancelled = true
     }
   }, [baseURL, fetchProjects, resetIssueInteractions])
-
-  useEffect(() => {
-    if (!baseURL) return
-
-    let cancelled = false
-
-    async function load() {
-      setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
-      setRuntimes((prev) => ({ ...prev, status: 'loading', error: null }))
-      const [agentResult, runtimeResult] = await Promise.allSettled([fetchAgents(), fetchRuntimes()])
-
-      if (cancelled) return
-
-      if (agentResult.status === 'fulfilled') {
-        setAgents({ status: 'success', data: agentResult.value ?? [], error: null })
-      } else {
-        setAgents({ status: 'error', data: [], error: errorMessage(agentResult.reason) })
-      }
-
-      if (runtimeResult.status === 'fulfilled') {
-        setRuntimes({ status: 'success', data: runtimeList(runtimeResult.value ?? []), error: null })
-      } else {
-        setRuntimes({ status: 'error', data: [], error: errorMessage(runtimeResult.reason) })
-      }
-    }
-
-    void load()
-
-    return () => {
-      cancelled = true
-    }
-  }, [baseURL, fetchAgents, fetchRuntimes])
 
   useEffect(() => {
     if (!baseURL || projects.status !== 'success') return
@@ -878,11 +995,19 @@ export default function App() {
       try {
         const tagData = await fetchProjectTags(projectId)
         if (!cancelled) {
-          setProjectTags({ status: 'success', data: tagData ?? [], error: null })
+          setProjectTags({
+            status: 'success',
+            data: tagData ?? [],
+            error: null,
+          })
         }
       } catch (err) {
         if (!cancelled) {
-          setProjectTags({ status: 'error', data: [], error: errorMessage(err) })
+          setProjectTags({
+            status: 'error',
+            data: [],
+            error: errorMessage(err),
+          })
         }
       }
     }
@@ -892,7 +1017,14 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, fetchIssues, fetchProjectTags, projects.status, resetIssueInteractions, selectedProjectId])
+  }, [
+    baseURL,
+    fetchIssues,
+    fetchProjectTags,
+    projects.status,
+    resetIssueInteractions,
+    selectedProjectId,
+  ])
 
   useEffect(() => {
     if (!baseURL || issues.status !== 'success') return
@@ -911,7 +1043,11 @@ export default function App() {
         }
       } catch (err) {
         if (!cancelled && sequence === issueLoadSeqRef.current) {
-          setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
+          setIssueDetail({
+            status: 'error',
+            data: null,
+            error: errorMessage(err),
+          })
         }
       }
 
@@ -920,12 +1056,20 @@ export default function App() {
           .then(() => fetchIssueTags(issueId))
           .then((data) => {
             if (!cancelled && sequence === issueLoadSeqRef.current) {
-              setIssueTags({ status: 'success', data: data ?? [], error: null })
+              setIssueTags({
+                status: 'success',
+                data: data ?? [],
+                error: null,
+              })
             }
           })
           .catch((err) => {
             if (!cancelled && sequence === issueLoadSeqRef.current) {
-              setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+              setIssueTags({
+                status: 'error',
+                data: [],
+                error: errorMessage(err),
+              })
             }
           }),
         Promise.resolve()
@@ -937,7 +1081,11 @@ export default function App() {
           })
           .catch((err) => {
             if (!cancelled && sequence === issueLoadSeqRef.current) {
-              setComments({ status: 'error', data: [], error: errorMessage(err) })
+              setComments({
+                status: 'error',
+                data: [],
+                error: errorMessage(err),
+              })
             }
           }),
         Promise.resolve()
@@ -949,7 +1097,67 @@ export default function App() {
           })
           .catch((err) => {
             if (!cancelled && sequence === issueLoadSeqRef.current) {
-              setActivity({ status: 'error', data: [], error: errorMessage(err) })
+              setActivity({
+                status: 'error',
+                data: [],
+                error: errorMessage(err),
+              })
+            }
+          }),
+        Promise.resolve()
+          .then(() => fetchAssignments(issueId))
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setAssignments({
+                status: 'success',
+                data: data.assignments,
+                error: null,
+              })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setAssignments({
+                status: 'error',
+                data: [],
+                error: errorMessage(err),
+              })
+            }
+          }),
+        Promise.resolve()
+          .then(() => fetchAgents())
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setAgents({ status: 'success', data: data ?? [], error: null })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setAgents({
+                status: 'error',
+                data: [],
+                error: errorMessage(err),
+              })
+            }
+          }),
+        Promise.resolve()
+          .then(() => fetchRuntimes())
+          .then((data) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setRuntimes({
+                status: 'success',
+                data: runtimeList(data),
+                error: null,
+              })
+            }
+          })
+          .catch((err) => {
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setRuntimes({
+                status: 'error',
+                data: [],
+                error: errorMessage(err),
+              })
             }
           }),
       ])
@@ -960,7 +1168,18 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, fetchActivity, fetchComments, fetchIssueDetail, fetchIssueTags, issues.status, selectedIssueId])
+  }, [
+    baseURL,
+    fetchActivity,
+    fetchAgents,
+    fetchAssignments,
+    fetchComments,
+    fetchIssueDetail,
+    fetchIssueTags,
+    fetchRuntimes,
+    issues.status,
+    selectedIssueId,
+  ])
 
   return (
     <div className="h-screen w-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
@@ -998,6 +1217,7 @@ export default function App() {
             projectTags={visibleProjectTags}
             issueTags={visibleIssueTags}
             comments={visibleComments}
+            assignments={visibleAssignments}
             agents={agents}
             runtimes={runtimes}
             mutationPending={mutationPending}
@@ -1007,6 +1227,7 @@ export default function App() {
               void Promise.all([loadProjectTags(), loadIssueTags()])
             }}
             onRetryComments={() => loadComments()}
+            onRetryAssignments={() => loadAssignments()}
             onRetryAgents={() => {
               void Promise.all([loadAgents(), loadRuntimes()])
             }}
@@ -1017,6 +1238,8 @@ export default function App() {
             onCreateComment={createComment}
             onUpdateComment={updateComment}
             onDeleteComment={deleteComment}
+            onCreateAssignment={createAssignment}
+            onCancelAssignment={cancelAssignment}
             onCreateAgent={createAgent}
             onUpdateAgent={updateAgent}
           />

@@ -10,7 +10,7 @@ import (
 	"github.com/bzqzheng/zin/services/daemon/store"
 )
 
-func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository, *store.AgentRepository, *store.RuntimeRepository, func()) {
+func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository, *store.AgentRepository, func()) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -26,13 +26,12 @@ func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository,
 	pr := store.NewProjectRepository(database)
 	ir := store.NewIssueRepository(database)
 	ar := store.NewAgentRepository(database)
-	rr := store.NewRuntimeRepository(database)
 
 	cleanup := func() {
 		database.Close()
 	}
 
-	return pr, ir, ar, rr, cleanup
+	return pr, ir, ar, cleanup
 }
 
 func setupInteractionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *store.IssueRepository, *store.TagRepository, *store.IssueCommentRepository, *store.IssueActivityRepository, func()) {
@@ -61,8 +60,35 @@ func setupInteractionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *st
 		cleanup
 }
 
+func setupAssignmentStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *store.IssueRepository, *store.AgentRepository, *store.RuntimeRepository, *store.IssueAssignmentRepository, *store.IssueActivityRepository, func()) {
+	t.Helper()
+	dir := t.TempDir()
+
+	database, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	if err := migration.Run(database); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	cleanup := func() {
+		database.Close()
+	}
+
+	return database,
+		store.NewProjectRepository(database),
+		store.NewIssueRepository(database),
+		store.NewAgentRepository(database),
+		store.NewRuntimeRepository(database),
+		store.NewIssueAssignmentRepository(database),
+		store.NewIssueActivityRepository(database),
+		cleanup
+}
+
 func TestProjectCRUD(t *testing.T) {
-	pr, _, _, _, cleanup := setupStore(t)
+	pr, _, _, cleanup := setupStore(t)
 	defer cleanup()
 
 	project, err := pr.Create("Test Project", "A test project")
@@ -113,7 +139,7 @@ func TestProjectCRUD(t *testing.T) {
 }
 
 func TestIssueCRUD(t *testing.T) {
-	pr, ir, _, _, cleanup := setupStore(t)
+	pr, ir, _, cleanup := setupStore(t)
 	defer cleanup()
 
 	project, err := pr.Create("Test Project", "")
@@ -184,7 +210,7 @@ func TestIssueCRUD(t *testing.T) {
 }
 
 func TestIssueFiltersGeneratedFieldsAndCascade(t *testing.T) {
-	pr, ir, _, _, cleanup := setupStore(t)
+	pr, ir, _, cleanup := setupStore(t)
 	defer cleanup()
 
 	project, err := pr.Create("Filtered Project", "")
@@ -252,21 +278,10 @@ func TestIssueFiltersGeneratedFieldsAndCascade(t *testing.T) {
 }
 
 func TestAgentCRUD(t *testing.T) {
-	_, _, ar, rr, cleanup := setupStore(t)
+	_, _, ar, cleanup := setupStore(t)
 	defer cleanup()
 
-	runtime, err := rr.Upsert(&store.Runtime{
-		Kind:         "codex",
-		DisplayName:  "Codex",
-		BinaryPath:   "/usr/local/bin/codex",
-		VersionRaw:   "1.0.0",
-		HealthStatus: "healthy",
-	})
-	if err != nil {
-		t.Fatalf("create runtime: %v", err)
-	}
-
-	agent, err := ar.Create("Build Agent", "craftsperson", runtime.ID, "gpt-5", "Ship complete work.")
+	agent, err := ar.Create("Build Agent", "craftsperson")
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
@@ -275,9 +290,6 @@ func TestAgentCRUD(t *testing.T) {
 	}
 	if agent.Status != "offline" {
 		t.Errorf("expected status 'offline', got '%s'", agent.Status)
-	}
-	if !agent.Assignable {
-		t.Errorf("expected agent with healthy runtime to be assignable: %s", agent.AssignableReason)
 	}
 
 	got, err := ar.GetByID(agent.ID)
@@ -291,13 +303,11 @@ func TestAgentCRUD(t *testing.T) {
 	agent.Name = "Oracle"
 	agent.Role = "advisor"
 	agent.Status = "online"
-	agent.Model = "gpt-5-mini"
-	agent.Instructions = "Advise carefully."
 	if err := ar.Update(agent); err != nil {
 		t.Fatalf("update agent: %v", err)
 	}
 
-	agents, err := ar.List(false)
+	agents, err := ar.List()
 	if err != nil {
 		t.Fatalf("list agents: %v", err)
 	}
@@ -317,9 +327,101 @@ func TestAgentCRUD(t *testing.T) {
 		t.Fatalf("delete agent: %v", err)
 	}
 
-	agents, _ = ar.List(false)
+	agents, _ = ar.List()
 	if len(agents) != 0 {
 		t.Errorf("expected 0 agents after delete, got %d", len(agents))
+	}
+}
+
+func TestIssueAssignmentIdempotencyAndFKRules(t *testing.T) {
+	database, projectRepo, issueRepo, agentRepo, runtimeRepo, assignmentRepo, activityRepo, cleanup := setupAssignmentStore(t)
+	defer cleanup()
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue, err := issueRepo.Create(project.ID, "Assign me", "", "todo", "medium")
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	runtime, err := runtimeRepo.Upsert(&store.Runtime{
+		Kind:         "codex",
+		DisplayName:  "Codex",
+		BinaryPath:   "/bin/codex",
+		VersionRaw:   "codex 1.0.0",
+		HealthStatus: "healthy",
+	})
+	if err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+	agent, err := agentRepo.CreateWithInput(store.CreateAgentInput{
+		Name:         "Builder",
+		RuntimeID:    runtime.ID,
+		IsAssignable: true,
+	})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	created, err := assignmentRepo.Create(store.CreateIssueAssignmentInput{
+		IssueID:         issue.ID,
+		AgentID:         agent.ID,
+		SourceType:      "issue_detail",
+		ClientRequestID: "req-1",
+	})
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if created.IdempotentReplay {
+		t.Fatal("first create should not be a replay")
+	}
+	replayed, err := assignmentRepo.Create(store.CreateIssueAssignmentInput{
+		IssueID:         issue.ID,
+		AgentID:         agent.ID,
+		SourceType:      "issue_detail",
+		ClientRequestID: "req-1",
+	})
+	if err != nil {
+		t.Fatalf("replay assignment: %v", err)
+	}
+	if !replayed.IdempotentReplay || replayed.Assignment.ID != created.Assignment.ID {
+		t.Fatalf("expected replay of same assignment, got %#v", replayed)
+	}
+	activities, err := activityRepo.ListByIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("list activities: %v", err)
+	}
+	var requestedEvents int
+	for _, activity := range activities {
+		if activity.Type == "assignment.requested" {
+			requestedEvents++
+		}
+	}
+	if requestedEvents != 1 {
+		t.Fatalf("expected exactly one requested activity, got %d", requestedEvents)
+	}
+
+	if err := agentRepo.Delete(agent.ID); err != nil {
+		t.Fatalf("delete agent: %v", err)
+	}
+	assignments, err := assignmentRepo.ListByIssue(issue.ID)
+	if err != nil {
+		t.Fatalf("list assignments after agent delete: %v", err)
+	}
+	if len(assignments) != 1 || assignments[0].AgentID != nil {
+		t.Fatalf("expected assignment audit retained with null agent, got %#v", assignments)
+	}
+
+	if err := issueRepo.Delete(issue.ID); err != nil {
+		t.Fatalf("delete issue: %v", err)
+	}
+	var count int
+	if err := database.QueryRow("SELECT COUNT(*) FROM issue_assignments WHERE issue_id = ?", issue.ID).Scan(&count); err != nil {
+		t.Fatalf("count assignments after issue delete: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected issue delete to cascade assignments, got %d", count)
 	}
 }
 

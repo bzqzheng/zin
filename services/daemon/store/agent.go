@@ -10,13 +10,31 @@ import (
 
 type AgentRepository struct {
 	db *sql.DB
+	q  sqlRunner
 }
 
 func NewAgentRepository(db *sql.DB) *AgentRepository {
-	return &AgentRepository{db: db}
+	return newAgentRepository(db, db)
 }
 
-func (r *AgentRepository) Create(name, role, runtimeID, model, instructions string) (*Agent, error) {
+func newAgentRepository(db *sql.DB, q sqlRunner) *AgentRepository {
+	return &AgentRepository{db: db, q: q}
+}
+
+type CreateAgentInput struct {
+	Name         string
+	Role         string
+	RuntimeID    string
+	ModelHint    string
+	Instructions string
+	IsAssignable bool
+}
+
+func (r *AgentRepository) Create(name, role string) (*Agent, error) {
+	return r.CreateWithInput(CreateAgentInput{Name: name, Role: role})
+}
+
+func (r *AgentRepository) CreateWithInput(input CreateAgentInput) (*Agent, error) {
 	uid, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generate uuid: %w", err)
@@ -25,64 +43,39 @@ func (r *AgentRepository) Create(name, role, runtimeID, model, instructions stri
 	now := time.Now().UTC()
 	a := &Agent{
 		ID:           uid.String(),
-		Name:         name,
-		Role:         role,
+		Name:         input.Name,
+		Role:         input.Role,
 		Status:       "offline",
-		RuntimeID:    runtimeID,
-		Model:        model,
-		Instructions: instructions,
+		RuntimeID:    input.RuntimeID,
+		ModelHint:    input.ModelHint,
+		Instructions: input.Instructions,
+		IsAssignable: input.IsAssignable,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
 
-	_, err = r.db.Exec(
-		`INSERT INTO agents (id, name, role, status, runtime_id, model, instructions, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID,
-		a.Name,
-		a.Role,
-		a.Status,
-		a.RuntimeID,
-		a.Model,
-		a.Instructions,
-		a.CreatedAt.Format(time.RFC3339),
-		a.UpdatedAt.Format(time.RFC3339),
+	_, err = r.q.Exec(
+		`INSERT INTO agents (id, name, role, status, runtime_id, model_hint, instructions, is_assignable, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.Name, a.Role, a.Status, a.RuntimeID, a.ModelHint, a.Instructions, boolToInt(a.IsAssignable),
+		a.CreatedAt.Format(time.RFC3339), a.UpdatedAt.Format(time.RFC3339),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert agent: %w", err)
 	}
 
-	created, err := r.GetByID(a.ID)
-	if err != nil {
-		return nil, err
-	}
-	return created, nil
+	return a, nil
 }
 
 func (r *AgentRepository) GetByID(id string) (*Agent, error) {
 	a := &Agent{}
 	var createdAt, updatedAt string
-	err := r.db.QueryRow(
-		`SELECT a.id, a.name, a.role, a.status, a.runtime_id, a.model, a.instructions,
-		        COALESCE(rt.display_name, ''), COALESCE(rt.health_status, ''),
-		        a.created_at, a.updated_at
-		 FROM agents a
-		 LEFT JOIN runtimes rt ON rt.id = a.runtime_id
-		 WHERE a.id = ?`,
+	var isAssignable int
+	err := r.q.QueryRow(
+		`SELECT id, name, role, status, runtime_id, model_hint, instructions, is_assignable, created_at, updated_at
+		 FROM agents WHERE id = ?`,
 		id,
-	).Scan(
-		&a.ID,
-		&a.Name,
-		&a.Role,
-		&a.Status,
-		&a.RuntimeID,
-		&a.Model,
-		&a.Instructions,
-		&a.RuntimeName,
-		&a.RuntimeStatus,
-		&createdAt,
-		&updatedAt,
-	)
+	).Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.RuntimeID, &a.ModelHint, &a.Instructions, &isAssignable, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -97,19 +90,28 @@ func (r *AgentRepository) GetByID(id string) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
 	}
-	a.applyAssignableGate()
+	a.IsAssignable = isAssignable != 0
 	return a, nil
 }
 
-func (r *AgentRepository) List(assignableOnly bool) ([]*Agent, error) {
-	rows, err := r.db.Query(
-		`SELECT a.id, a.name, a.role, a.status, a.runtime_id, a.model, a.instructions,
-		        COALESCE(rt.display_name, ''), COALESCE(rt.health_status, ''),
-		        a.created_at, a.updated_at
-		 FROM agents a
-		 LEFT JOIN runtimes rt ON rt.id = a.runtime_id
-		 ORDER BY a.created_at DESC`,
-	)
+func (r *AgentRepository) List() ([]*Agent, error) {
+	return r.ListWithFilters(AgentFilters{})
+}
+
+type AgentFilters struct {
+	Assignable *bool
+}
+
+func (r *AgentRepository) ListWithFilters(filters AgentFilters) ([]*Agent, error) {
+	query := `SELECT id, name, role, status, runtime_id, model_hint, instructions, is_assignable, created_at, updated_at FROM agents`
+	var args []any
+	if filters.Assignable != nil {
+		query += " WHERE is_assignable = ?"
+		args = append(args, boolToInt(*filters.Assignable))
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := r.q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
 	}
@@ -119,19 +121,8 @@ func (r *AgentRepository) List(assignableOnly bool) ([]*Agent, error) {
 	for rows.Next() {
 		a := &Agent{}
 		var createdAt, updatedAt string
-		if err := rows.Scan(
-			&a.ID,
-			&a.Name,
-			&a.Role,
-			&a.Status,
-			&a.RuntimeID,
-			&a.Model,
-			&a.Instructions,
-			&a.RuntimeName,
-			&a.RuntimeStatus,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
+		var isAssignable int
+		if err := rows.Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.RuntimeID, &a.ModelHint, &a.Instructions, &isAssignable, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		a.CreatedAt, err = parseTime(createdAt)
@@ -142,59 +133,41 @@ func (r *AgentRepository) List(assignableOnly bool) ([]*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
-		a.applyAssignableGate()
-		if assignableOnly && !a.Assignable {
-			continue
-		}
+		a.IsAssignable = isAssignable != 0
 		agents = append(agents, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agents: %w", err)
 	}
 	return agents, nil
 }
 
 func (r *AgentRepository) Update(a *Agent) error {
 	a.UpdatedAt = time.Now().UTC()
-	_, err := r.db.Exec(
+	_, err := r.q.Exec(
 		`UPDATE agents
-		 SET name = ?, role = ?, status = ?, runtime_id = ?, model = ?, instructions = ?, updated_at = ?
+		 SET name = ?, role = ?, status = ?, runtime_id = ?, model_hint = ?, instructions = ?, is_assignable = ?, updated_at = ?
 		 WHERE id = ?`,
-		a.Name,
-		a.Role,
-		a.Status,
-		a.RuntimeID,
-		a.Model,
-		a.Instructions,
-		a.UpdatedAt.Format(time.RFC3339),
-		a.ID,
+		a.Name, a.Role, a.Status, a.RuntimeID, a.ModelHint, a.Instructions, boolToInt(a.IsAssignable),
+		a.UpdatedAt.Format(time.RFC3339), a.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update agent: %w", err)
 	}
-	a.applyAssignableGate()
 	return nil
 }
 
 func (r *AgentRepository) Delete(id string) error {
-	_, err := r.db.Exec("DELETE FROM agents WHERE id = ?", id)
+	_, err := r.q.Exec("DELETE FROM agents WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete agent: %w", err)
 	}
 	return nil
 }
 
-func (a *Agent) applyAssignableGate() {
-	switch {
-	case a.RuntimeID == "":
-		a.Assignable = false
-		a.AssignableReason = "Bind this agent to a runtime before assigning work."
-	case a.RuntimeStatus != "healthy":
-		a.Assignable = false
-		if a.RuntimeStatus == "" {
-			a.AssignableReason = "The bound runtime is unavailable. Rebind the agent to a healthy runtime."
-		} else {
-			a.AssignableReason = "The bound runtime is " + a.RuntimeStatus + ". Revalidate or choose a healthy runtime before assigning work."
-		}
-	default:
-		a.Assignable = true
-		a.AssignableReason = ""
+func boolToInt(value bool) int {
+	if value {
+		return 1
 	}
+	return 0
 }

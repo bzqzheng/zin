@@ -5,7 +5,6 @@ export type {
   Project,
   Issue,
   Agent,
-  Runtime,
   Tag,
   IssueComment,
   IssueActivity,
@@ -16,4 +15,8 @@ export type {
   RuntimeDiscoveryResponse,
   RuntimeDiscoverySummary,
   RuntimeMutationResponse,
+  AssignmentListResponse,
+  AssignmentMutationResponse,
+  CreateAssignmentResponse,
+  IssueAssignment,
 } from './types'

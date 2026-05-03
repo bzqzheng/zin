@@ -16,6 +16,7 @@ func NewRouter(
 	interactions *handler.InteractionHandler,
 	agents *handler.AgentHandler,
 	runtimes *handler.RuntimeHandler,
+	assignments *handler.AssignmentHandler,
 	shutdownCh chan<- struct{},
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -46,12 +47,16 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/comments/{id}", interactions.UpdateComment)
 	mux.HandleFunc("DELETE /api/comments/{id}", interactions.DeleteComment)
 	mux.HandleFunc("GET /api/issues/{id}/activity", interactions.ListActivity)
+	mux.HandleFunc("POST /api/issues/{id}/assignments", assignments.Create)
+	mux.HandleFunc("GET /api/issues/{id}/assignments", assignments.ListByIssue)
+	mux.HandleFunc("POST /api/assignments/{id}/cancel", assignments.Cancel)
 
 	mux.HandleFunc("GET /api/agents", agents.List)
 	mux.HandleFunc("POST /api/agents", agents.Create)
 	mux.HandleFunc("GET /api/agents/{id}", agents.Get)
 	mux.HandleFunc("PUT /api/agents/{id}", agents.Update)
 	mux.HandleFunc("DELETE /api/agents/{id}", agents.Delete)
+
 	mux.HandleFunc("GET /api/runtimes", runtimes.List)
 	mux.HandleFunc("POST /api/runtimes/discover", runtimes.Discover)
 	mux.HandleFunc("POST /api/runtimes/validate", runtimes.Validate)
