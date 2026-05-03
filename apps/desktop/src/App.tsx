@@ -91,6 +91,14 @@ export default function App() {
     [fetchApi],
   )
 
+  const resetWorkspaceCache = useCallback(() => {
+    setProjects(emptyProjects)
+    setIssues(emptyIssues)
+    setIssueDetail(emptyIssueDetail)
+    setPreferredProjectId(null)
+    setPreferredIssueId(null)
+  }, [])
+
   const startDaemonOnce = useCallback(() => {
     if (!daemonStartRef.current) {
       daemonStartRef.current = startDaemon().catch((err) => {
@@ -112,13 +120,9 @@ export default function App() {
       }
     } catch {
       setDaemonStatus('error')
-      setProjects(emptyProjects)
-      setIssues(emptyIssues)
-      setIssueDetail(emptyIssueDetail)
-      setPreferredProjectId(null)
-      setPreferredIssueId(null)
+      resetWorkspaceCache()
     }
-  }, [baseURL, startDaemonOnce])
+  }, [baseURL, resetWorkspaceCache, startDaemonOnce])
 
   const loadProjects = useCallback(async () => {
     if (!baseURL) return
@@ -176,12 +180,17 @@ export default function App() {
     [baseURL, fetchIssueDetail, selectedIssueId],
   )
 
-  const selectProject = useCallback((projectId: string) => {
-    setPreferredProjectId(projectId)
-    setPreferredIssueId(null)
-    setIssues({ status: 'loading', data: [], error: null })
-    setIssueDetail({ status: 'loading', data: null, error: null })
-  }, [])
+  const selectProject = useCallback(
+    (projectId: string) => {
+      if (projectId === selectedProjectId) return
+
+      setPreferredProjectId(projectId)
+      setPreferredIssueId(null)
+      setIssues({ status: 'loading', data: [], error: null })
+      setIssueDetail({ status: 'loading', data: null, error: null })
+    },
+    [selectedProjectId],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -198,6 +207,7 @@ export default function App() {
       } catch {
         if (!cancelled) {
           setDaemonStatus('error')
+          resetWorkspaceCache()
         }
       }
     }
@@ -207,7 +217,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [baseURL, startDaemonOnce])
+  }, [baseURL, resetWorkspaceCache, startDaemonOnce])
 
   useEffect(() => {
     if (!baseURL) return

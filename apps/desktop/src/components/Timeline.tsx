@@ -14,6 +14,13 @@ function formatDateTime(value: string) {
   }).format(new Date(value))
 }
 
+function displayLabel(value: string) {
+  return value
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
 export default function Timeline({ issue }: TimelineProps) {
   const events = issue.data
     ? [
@@ -25,7 +32,7 @@ export default function Timeline({ issue }: TimelineProps) {
         },
         {
           id: 'updated',
-          action: `Status: ${issue.data.status}`,
+          action: `Status: ${displayLabel(issue.data.status)}`,
           time: formatDateTime(issue.data.updated_at),
           dot: 'bg-amber-500',
         },

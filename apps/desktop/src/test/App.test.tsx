@@ -123,6 +123,25 @@ describe('App', () => {
     })
   })
 
+  it('keeps the current issue list stable when the selected project is clicked again', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    const fetchApi = vi.fn((path: string) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Alpha' }))
+
+    expect(screen.queryByText('Loading issues...')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /ISSUE-1.*Alpha issue/ })).toBeVisible()
+  })
+
   it('retries project loading after an error', async () => {
     const fetchApi = vi
       .fn()
