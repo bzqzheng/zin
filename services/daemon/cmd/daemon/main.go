@@ -57,6 +57,7 @@ func run() error {
 	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
 	runtimeRepo := store.NewRuntimeRepository(database)
+	assignmentRepo := store.NewIssueAssignmentRepository(database)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
 	if err != nil {
@@ -83,8 +84,9 @@ func run() error {
 		handler.NewProjectHandler(projectRepo),
 		handler.NewIssueHandler(database, issueRepo, projectRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
-		handler.NewAgentHandler(agentRepo),
+		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
+		handler.NewAssignmentHandler(assignmentRepo),
 		shutdownCh,
 	)
 
