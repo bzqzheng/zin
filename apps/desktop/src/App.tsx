@@ -460,10 +460,9 @@ export default function App() {
       await runMutation(async (sequence) => {
         await fetchApi<Issue>(`/api/issues/${selectedIssueId}`, jsonRequest('PUT', input))
         if (sequence !== issueLoadSeqRef.current) return
-        await Promise.all([
-          loadIssues(selectedProjectId),
-          reloadIssueContext(selectedIssueId, selectedProjectId, sequence),
-        ])
+        await loadIssues(selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, loadIssues, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
