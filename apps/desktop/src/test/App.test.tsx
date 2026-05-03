@@ -81,6 +81,8 @@ const codexRuntime: RuntimeRecord = {
 }
 
 function interactionResponse(path: string) {
+  if (path === '/api/agents') return []
+  if (path === '/api/runtimes') return []
   if (path.endsWith('/tags')) return []
   if (path.endsWith('/comments')) return []
   if (path.endsWith('/activity')) return []
@@ -268,6 +270,8 @@ describe('App', () => {
       if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
       if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
       if (path === '/api/issues/issue-alpha/activity') return Promise.resolve(activityState)
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -321,6 +325,8 @@ describe('App', () => {
       if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
       if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
       if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([])
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -427,6 +433,8 @@ describe('App', () => {
       }
       if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
       if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([])
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -482,6 +490,8 @@ describe('App', () => {
         comments = comments.filter((comment) => comment.id !== 'comment-two')
         return Promise.resolve(undefined)
       }
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
       throw new Error(`unexpected path: ${path}`)
     })
 
@@ -511,6 +521,7 @@ describe('App', () => {
     let runtimes = [codexRuntime]
     const fetchApi = vi.fn((path: string, init?: RequestInit) => {
       if (path === '/api/projects') return Promise.resolve([])
+      if (path === '/api/agents') return Promise.resolve([])
       if (path === '/api/runtimes') return Promise.resolve({ runtimes })
       if (path === '/api/runtimes/runtime-codex' && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body))

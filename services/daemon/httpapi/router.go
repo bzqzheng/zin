@@ -52,7 +52,6 @@ func NewRouter(
 	mux.HandleFunc("GET /api/agents/{id}", agents.Get)
 	mux.HandleFunc("PUT /api/agents/{id}", agents.Update)
 	mux.HandleFunc("DELETE /api/agents/{id}", agents.Delete)
-
 	mux.HandleFunc("GET /api/runtimes", runtimes.List)
 	mux.HandleFunc("POST /api/runtimes/discover", runtimes.Discover)
 	mux.HandleFunc("POST /api/runtimes/validate", runtimes.Validate)

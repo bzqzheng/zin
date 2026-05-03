@@ -2,9 +2,9 @@ export { DaemonConnectionProvider } from './DaemonConnection'
 export { useDaemon } from './useDaemon'
 export { useApi } from './useApi'
 export type {
+  Agent,
   Project,
   Issue,
-  Agent,
   Tag,
   IssueComment,
   IssueActivity,

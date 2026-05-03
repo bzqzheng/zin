@@ -1,5 +1,5 @@
 import { useDaemon } from './useDaemon'
-import type { Project, Issue, Agent } from './types'
+import type { Agent, Issue, Project, RuntimeListResponse, RuntimeRecord } from './types'
 
 export function useApi() {
   const { fetchApi, baseURL } = useDaemon()
@@ -48,18 +48,30 @@ export function useApi() {
     agents: {
       list: () => fetchApi<Agent[]>('/api/agents'),
       get: (id: string) => fetchApi<Agent>(`/api/agents/${id}`),
-      create: (name: string, role?: string) =>
+      create: (data: { name: string; role?: string; runtime_id?: string; model?: string; instructions?: string }) =>
         fetchApi<Agent>('/api/agents', {
           method: 'POST',
-          body: JSON.stringify({ name, role: role || '' }),
+          body: JSON.stringify(data),
         }),
-      update: (id: string, data: { name?: string; role?: string; status?: string }) =>
+      update: (
+        id: string,
+        data: { name?: string; role?: string; status?: string; runtime_id?: string; model?: string; instructions?: string },
+      ) =>
         fetchApi<Agent>(`/api/agents/${id}`, {
           method: 'PUT',
           body: JSON.stringify(data),
         }),
       delete: (id: string) =>
         fetchApi<void>(`/api/agents/${id}`, { method: 'DELETE' }),
+    },
+
+    runtimes: {
+      list: () => fetchApi<RuntimeListResponse | RuntimeRecord[]>('/api/runtimes'),
+      discover: () =>
+        fetchApi<RuntimeListResponse>('/api/runtimes/discover', {
+          method: 'POST',
+          body: JSON.stringify({ path_overrides: {} }),
+        }),
     },
 
     health: {

@@ -39,9 +39,9 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(database, issueRepo, projectRepo),
+		handler.NewIssueHandler(database, issueRepo, projectRepo, agentRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
-		handler.NewAgentHandler(agentRepo),
+		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
 		make(chan struct{}, 1),
 	)
@@ -370,6 +370,65 @@ func TestRuntimeUpdatePersistsKindMismatch(t *testing.T) {
 	t.Fatalf("expected updated runtime in list: %#v", listed.Runtimes)
 }
 
+func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	var healthy, missing store.Runtime
+	for _, runtime := range discovered.Runtimes {
+		switch runtime.Kind {
+		case "codex":
+			healthy = runtime
+		case "claude":
+			missing = runtime
+		}
+	}
+	if healthy.ID == "" || missing.ID == "" {
+		t.Fatalf("expected healthy and missing runtimes, got %#v", discovered.Runtimes)
+	}
+
+	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+healthy.ID+`","model":"gpt-5","instructions":"Complete the work."}`, http.StatusCreated)
+	if !assignable.Assignable || assignable.RuntimeStatus != "healthy" || assignable.Model != "gpt-5" {
+		t.Fatalf("expected healthy runtime agent to be assignable, got %#v", assignable)
+	}
+
+	blocked := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Smith","role":"reviewer","runtime_id":"`+missing.ID+`"}`, http.StatusCreated)
+	if blocked.Assignable || !strings.Contains(blocked.AssignableReason, "missing") {
+		t.Fatalf("expected missing runtime agent to be gated with explicit reason, got %#v", blocked)
+	}
+
+	filtered := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
+	if len(filtered) != 1 || filtered[0].ID != assignable.ID {
+		t.Fatalf("expected assignable filter to return only healthy runtime agent, got %#v", filtered)
+	}
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Gate server-side assignment"})
+	blockedAssignment := requestJSON[map[string]map[string]string](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+blocked.ID+`"}`, http.StatusBadRequest)
+	if blockedAssignment["error"]["code"] != "ASSIGNEE_NOT_ASSIGNABLE" || !strings.Contains(blockedAssignment["error"]["details"], "missing") {
+		t.Fatalf("expected explicit assignability error, got %#v", blockedAssignment)
+	}
+	assigned := requestJSON[store.Issue](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+assignable.ID+`"}`, http.StatusOK)
+	if assigned.AssigneeID != assignable.ID {
+		t.Fatalf("expected assignable agent to be accepted, got %#v", assigned)
+	}
+
+	updated := requestJSON[store.Agent](t, router, http.MethodPut, "/api/agents/"+blocked.ID, `{"runtime_id":"`+healthy.ID+`","model":"claude-sonnet","instructions":"Review carefully."}`, http.StatusOK)
+	if !updated.Assignable || updated.Model != "claude-sonnet" || updated.Instructions != "Review carefully." {
+		t.Fatalf("expected update to bind healthy runtime and persist config, got %#v", updated)
+	}
+
+	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Missing","runtime_id":"missing"}`, http.StatusBadRequest)
+}
+
 func TestInteractionEndpointContracts(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()
@@ -532,8 +591,9 @@ func assertStatus(t *testing.T, router http.Handler, method, path, body string, 
 
 func writeHandlerExecutable(t *testing.T, name, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write executable: %v", err)
 	}
 	return path
@@ -541,9 +601,9 @@ func writeHandlerExecutable(t *testing.T, name, content string) string {
 
 func mustJSONQuote(t *testing.T, value string) string {
 	t.Helper()
-	encoded, err := json.Marshal(value)
+	data, err := json.Marshal(value)
 	if err != nil {
-		t.Fatalf("quote value: %v", err)
+		t.Fatalf("json quote: %v", err)
 	}
-	return string(encoded)
+	return string(data)
 }
