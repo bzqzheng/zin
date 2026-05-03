@@ -40,7 +40,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(database, issueRepo, projectRepo),
+		handler.NewIssueHandler(database, issueRepo, projectRepo, agentRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
@@ -471,6 +471,13 @@ func TestAssignmentGateFailures(t *testing.T) {
 
 	unassignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Dormant","runtime_id":"`+runtimeID+`","is_assignable":false}`, http.StatusCreated)
 	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+unassignable.ID+`","source_type":"issue_detail","client_request_id":"req-gate-1"}`, http.StatusUnprocessableEntity)
+	assertStatus(t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+unassignable.ID+`"}`, http.StatusBadRequest)
+
+	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Ready","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusCreated)
+	updated := requestJSON[store.Issue](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+assignable.ID+`"}`, http.StatusOK)
+	if updated.AssigneeID != assignable.ID {
+		t.Fatalf("expected assignable assignee to persist, got %#v", updated)
+	}
 
 	degraded := writeHandlerExecutable(t, "codex", "#!/bin/sh\nexit 9\n")
 	runtime := requestJSON[struct {

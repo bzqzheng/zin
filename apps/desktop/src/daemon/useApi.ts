@@ -18,13 +18,11 @@ export function useApi() {
           method: 'PUT',
           body: JSON.stringify(data),
         }),
-      delete: (id: string) =>
-        fetchApi<void>(`/api/projects/${id}`, { method: 'DELETE' }),
+      delete: (id: string) => fetchApi<void>(`/api/projects/${id}`, { method: 'DELETE' }),
     },
 
     issues: {
-      list: (projectId: string) =>
-        fetchApi<Issue[]>(`/api/projects/${projectId}/issues`),
+      list: (projectId: string) => fetchApi<Issue[]>(`/api/projects/${projectId}/issues`),
       get: (id: string) => fetchApi<Issue>(`/api/issues/${id}`),
       create: (projectId: string, title: string, data?: Partial<Issue>) =>
         fetchApi<Issue>(`/api/projects/${projectId}/issues`, {
@@ -41,29 +39,48 @@ export function useApi() {
           method: 'PUT',
           body: JSON.stringify({ status }),
         }),
-      delete: (id: string) =>
-        fetchApi<void>(`/api/issues/${id}`, { method: 'DELETE' }),
+      delete: (id: string) => fetchApi<void>(`/api/issues/${id}`, { method: 'DELETE' }),
     },
 
     agents: {
       list: () => fetchApi<Agent[]>('/api/agents'),
       get: (id: string) => fetchApi<Agent>(`/api/agents/${id}`),
-      create: (name: string, role?: string) =>
+      create: (name: string, role?: string, runtimeId?: string) =>
         fetchApi<Agent>('/api/agents', {
           method: 'POST',
-          body: JSON.stringify({ name, role: role || '' }),
+          body: JSON.stringify({
+            name,
+            role: role || '',
+            runtime_id: runtimeId || '',
+            is_assignable: Boolean(runtimeId),
+          }),
         }),
-      update: (id: string, data: { name?: string; role?: string; status?: string }) =>
+      update: (
+        id: string,
+        data: {
+          name?: string
+          role?: string
+          status?: string
+          runtime_id?: string
+          is_assignable?: boolean
+        },
+      ) =>
         fetchApi<Agent>(`/api/agents/${id}`, {
           method: 'PUT',
           body: JSON.stringify(data),
         }),
-      delete: (id: string) =>
-        fetchApi<void>(`/api/agents/${id}`, { method: 'DELETE' }),
+      delete: (id: string) => fetchApi<void>(`/api/agents/${id}`, { method: 'DELETE' }),
     },
 
     health: {
-      check: () => fetchApi<{ status: string; uptime_seconds: number; db_status: string; version: string; port: number }>('/health'),
+      check: () =>
+        fetchApi<{
+          status: string
+          uptime_seconds: number
+          db_status: string
+          version: string
+          port: number
+        }>('/health'),
     },
 
     baseURL,

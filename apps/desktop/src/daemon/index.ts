@@ -15,4 +15,8 @@ export type {
   RuntimeDiscoveryResponse,
   RuntimeDiscoverySummary,
   RuntimeMutationResponse,
+  AssignmentListResponse,
+  AssignmentMutationResponse,
+  CreateAssignmentResponse,
+  IssueAssignment,
 } from './types'

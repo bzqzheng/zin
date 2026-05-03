@@ -13,10 +13,11 @@ type IssueHandler struct {
 	db          *sql.DB
 	repo        *store.IssueRepository
 	projectRepo *store.ProjectRepository
+	agentRepo   *store.AgentRepository
 }
 
-func NewIssueHandler(db *sql.DB, repo *store.IssueRepository, projectRepo *store.ProjectRepository) *IssueHandler {
-	return &IssueHandler{db: db, repo: repo, projectRepo: projectRepo}
+func NewIssueHandler(db *sql.DB, repo *store.IssueRepository, projectRepo *store.ProjectRepository, agentRepo *store.AgentRepository) *IssueHandler {
+	return &IssueHandler{db: db, repo: repo, projectRepo: projectRepo, agentRepo: agentRepo}
 }
 
 type createIssueRequest struct {
@@ -155,6 +156,20 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.AssigneeID != nil {
+		assigneeID := strings.TrimSpace(*req.AssigneeID)
+		if assigneeID != "" && assigneeID != issue.AssigneeID {
+			agent, err := h.agentRepo.GetByID(assigneeID)
+			if err != nil {
+				response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to verify assignee", err.Error())
+				return
+			}
+			if agent == nil || !agent.IsAssignable {
+				response.Error(w, http.StatusBadRequest, "ASSIGNEE_NOT_ASSIGNABLE", "assignee is not assignable", "")
+				return
+			}
+		}
+	}
 
 	before := *issue
 	if req.Title != nil {
@@ -170,7 +185,7 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 		issue.Priority = *req.Priority
 	}
 	if req.AssigneeID != nil {
-		issue.AssigneeID = *req.AssigneeID
+		issue.AssigneeID = strings.TrimSpace(*req.AssigneeID)
 	}
 	if req.CreatorID != nil {
 		issue.CreatorID = *req.CreatorID

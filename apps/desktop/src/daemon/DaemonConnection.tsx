@@ -3,13 +3,14 @@ import { invoke } from '@tauri-apps/api/core'
 import { DaemonContext, type DaemonConnectionState } from './useDaemon'
 
 export function DaemonConnectionProvider({ children }: { children: ReactNode }) {
+  const mockBaseURL = import.meta.env.VITE_ZIN_MOCK_DAEMON_BASE_URL || ''
   const [state, setState] = useState<DaemonConnectionState>({
-    port: null,
-    connected: false,
+    port: mockBaseURL ? 0 : null,
+    connected: Boolean(mockBaseURL),
     error: null,
   })
 
-  const baseURL = state.port ? `http://127.0.0.1:${state.port}` : null
+  const baseURL = mockBaseURL || (state.port ? `http://127.0.0.1:${state.port}` : null)
 
   const fetchApi = useCallback(
     async <T,>(path: string, init?: RequestInit): Promise<T> => {
@@ -29,6 +30,11 @@ export function DaemonConnectionProvider({ children }: { children: ReactNode }) 
   )
 
   const startDaemon = useCallback(async (): Promise<number> => {
+    if (mockBaseURL) {
+      setState({ port: 0, connected: true, error: null })
+      return 0
+    }
+
     try {
       const info: { port: number } = await invoke('start_daemon')
       setState({ port: info.port, connected: true, error: null })
@@ -38,7 +44,7 @@ export function DaemonConnectionProvider({ children }: { children: ReactNode }) 
       setState({ port: null, connected: false, error: message })
       throw err
     }
-  }, [])
+  }, [mockBaseURL])
 
   const checkHealth = useCallback(async () => {
     try {
@@ -46,7 +52,11 @@ export function DaemonConnectionProvider({ children }: { children: ReactNode }) 
       if (health.status === 'ok') {
         setState((prev) => ({ ...prev, connected: true, error: null }))
       } else {
-        setState((prev) => ({ ...prev, connected: false, error: `status: ${health.status}` }))
+        setState((prev) => ({
+          ...prev,
+          connected: false,
+          error: `status: ${health.status}`,
+        }))
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

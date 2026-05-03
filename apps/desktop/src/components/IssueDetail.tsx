@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ResourceState } from '../App'
-import type { Issue, IssueComment, Tag } from '../daemon'
+import type { Agent, Issue, IssueAssignment, IssueComment, RuntimeRecord, Tag } from '../daemon'
 
 export interface IssueUpdateInput {
   title: string
@@ -10,16 +10,29 @@ export interface IssueUpdateInput {
   assignee_id: string
 }
 
+export interface AgentConfigInput {
+  name: string
+  role: string
+  runtime_id: string
+  model_hint: string
+  instructions: string
+}
+
 interface IssueDetailProps {
   issue: ResourceState<Issue | null>
   projectTags: ResourceState<Tag[]>
   issueTags: ResourceState<Tag[]>
   comments: ResourceState<IssueComment[]>
+  assignments: ResourceState<IssueAssignment[]>
+  agents: ResourceState<Agent[]>
+  runtimes: ResourceState<RuntimeRecord[]>
   mutationPending: boolean
   mutationError: string | null
   onRetryIssue: () => void
   onRetryTags: () => void
   onRetryComments: () => void
+  onRetryAssignments: () => void
+  onRetryAgents: () => void
   onUpdateIssue: (input: IssueUpdateInput) => Promise<void>
   onCreateTag: (name: string, color: string) => Promise<void>
   onAttachTag: (tagId: string) => Promise<void>
@@ -27,6 +40,13 @@ interface IssueDetailProps {
   onCreateComment: (body: string) => Promise<void>
   onUpdateComment: (commentId: string, body: string) => Promise<void>
   onDeleteComment: (commentId: string) => Promise<void>
+  onCreateAssignment: (
+    agentId: string,
+    source: { type: 'issue_detail' | 'comment'; id?: string },
+  ) => Promise<void>
+  onCancelAssignment: (assignmentId: string) => Promise<void>
+  onCreateAgent: (input: AgentConfigInput) => Promise<void>
+  onUpdateAgent: (agentId: string, input: AgentConfigInput) => Promise<void>
 }
 
 const labelStyle = 'text-xs bg-zinc-900 px-2 py-0.5 rounded'
@@ -80,7 +100,11 @@ function SectionError({
     <div className="rounded border border-red-900/50 bg-red-950/20 px-3 py-2">
       <p className="text-sm text-red-300">{title}</p>
       {error && <p className="mt-1 text-sm text-zinc-500">{error}</p>}
-      <button type="button" onClick={onRetry} className="mt-2 text-sm font-medium text-zinc-200 hover:text-white">
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-2 text-sm font-medium text-zinc-200 hover:text-white"
+      >
         Retry
       </button>
     </div>
@@ -90,16 +114,28 @@ function SectionError({
 function CommentItem({
   comment,
   disabled,
+  assignableAgents,
   onUpdate,
   onDelete,
+  onAssign,
 }: {
   comment: IssueComment
   disabled: boolean
+  assignableAgents: Agent[]
   onUpdate: (commentId: string, body: string) => Promise<void>
   onDelete: (commentId: string) => Promise<void>
+  onAssign: (agentId: string, commentId: string) => Promise<void>
 }) {
   const [editing, setEditing] = useState(false)
   const [body, setBody] = useState(comment.body)
+  const [selectedAgentId, setSelectedAgentId] = useState('')
+
+  useEffect(() => {
+    if (!assignableAgents.some((agent) => agent.id === selectedAgentId)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedAgentId(assignableAgents[0]?.id ?? '')
+    }
+  }, [assignableAgents, selectedAgentId])
 
   if (editing) {
     return (
@@ -173,7 +209,86 @@ function CommentItem({
           </button>
         </div>
       </div>
-      <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-400">{comment.body}</p>
+      <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-400">
+        {comment.body}
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <select
+          value={selectedAgentId}
+          onChange={(event) => setSelectedAgentId(event.target.value)}
+          disabled={disabled || assignableAgents.length === 0}
+          className="min-w-48 rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 outline-none focus:border-zinc-600"
+          aria-label={`Assign comment from ${comment.author_name || 'You'}`}
+        >
+          {assignableAgents.length === 0 ? (
+            <option value="">No assignable agents</option>
+          ) : (
+            assignableAgents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+                {agent.model_hint ? ` · ${agent.model_hint}` : ''}
+              </option>
+            ))
+          )}
+        </select>
+        <button
+          type="button"
+          disabled={disabled || selectedAgentId === ''}
+          onClick={() => {
+            void onAssign(selectedAgentId, comment.id).catch(() => undefined)
+          }}
+          className="rounded border border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:border-zinc-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Assign
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function AssignmentItem({
+  assignment,
+  agent,
+  disabled,
+  onCancel,
+}: {
+  assignment: IssueAssignment
+  agent: Agent | null
+  disabled: boolean
+  onCancel: (assignmentId: string) => Promise<void>
+}) {
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(assignment.status)
+
+  return (
+    <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-zinc-200">
+              {agent?.name ?? 'Deleted agent'}
+            </span>
+            <span className={`${labelStyle} text-zinc-400`}>{displayLabel(assignment.status)}</span>
+            <span className={`${labelStyle} text-zinc-500`}>
+              {assignment.source_type === 'comment' ? 'Comment' : 'Issue detail'}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-zinc-500">
+            Queued {formatDateTime(assignment.requested_at)}
+          </p>
+        </div>
+        {!isTerminal && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              void onCancel(assignment.id).catch(() => undefined)
+            }}
+            className="text-xs text-red-300 hover:text-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -183,11 +298,16 @@ export default function IssueDetail({
   projectTags,
   issueTags,
   comments,
+  assignments,
+  agents,
+  runtimes,
   mutationPending,
   mutationError,
   onRetryIssue,
   onRetryTags,
   onRetryComments,
+  onRetryAssignments,
+  onRetryAgents,
   onUpdateIssue,
   onCreateTag,
   onAttachTag,
@@ -195,6 +315,10 @@ export default function IssueDetail({
   onCreateComment,
   onUpdateComment,
   onDeleteComment,
+  onCreateAssignment,
+  onCancelAssignment,
+  onCreateAgent,
+  onUpdateAgent,
 }: IssueDetailProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -205,6 +329,13 @@ export default function IssueDetail({
   const [newTagColor, setNewTagColor] = useState('#3b82f6')
   const [selectedTagId, setSelectedTagId] = useState('')
   const [commentBody, setCommentBody] = useState('')
+  const [selectedAssignmentAgentId, setSelectedAssignmentAgentId] = useState('')
+  const [selectedConfigAgentId, setSelectedConfigAgentId] = useState('')
+  const [agentName, setAgentName] = useState('')
+  const [agentRole, setAgentRole] = useState('')
+  const [agentRuntimeId, setAgentRuntimeId] = useState('')
+  const [agentModelHint, setAgentModelHint] = useState('')
+  const [agentInstructions, setAgentInstructions] = useState('')
 
   useEffect(() => {
     if (!issue.data) return
@@ -223,6 +354,63 @@ export default function IssueDetail({
     const attached = new Set(attachedTags.map((tag) => tag.id))
     return allTags.filter((tag) => !attached.has(tag.id))
   }, [issueTags.data, projectTags.data])
+
+  const assignableAgents = useMemo(
+    () => agents.data.filter((agent) => agent.is_assignable),
+    [agents.data],
+  )
+
+  const activeAssignments = useMemo(
+    () => assignments.data.filter((assignment) => assignment.status !== 'cancelled'),
+    [assignments.data],
+  )
+
+  const agentById = useMemo(
+    () => new Map(agents.data.map((agent) => [agent.id, agent])),
+    [agents.data],
+  )
+
+  const selectedAgent = useMemo(
+    () => agents.data.find((agent) => agent.id === assigneeId) ?? null,
+    [agents.data, assigneeId],
+  )
+
+  const selectedConfigAgent = useMemo(
+    () => agents.data.find((agent) => agent.id === selectedConfigAgentId) ?? null,
+    [agents.data, selectedConfigAgentId],
+  )
+
+  useEffect(() => {
+    if (agents.status !== 'success') return
+    if (assignableAgents.some((agent) => agent.id === selectedAssignmentAgentId)) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedAssignmentAgentId(assignableAgents[0]?.id ?? '')
+  }, [agents.status, assignableAgents, selectedAssignmentAgentId])
+
+  useEffect(() => {
+    if (agents.status !== 'success') return
+    if (selectedConfigAgentId && agents.data.some((agent) => agent.id === selectedConfigAgentId))
+      return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedConfigAgentId(agents.data[0]?.id ?? '')
+  }, [agents.data, agents.status, selectedConfigAgentId])
+
+  useEffect(() => {
+    if (!selectedConfigAgent) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAgentName('')
+      setAgentRole('')
+      setAgentRuntimeId(runtimes.data[0]?.id ?? '')
+      setAgentModelHint('')
+      setAgentInstructions('')
+      return
+    }
+    setAgentName(selectedConfigAgent.name)
+    setAgentRole(selectedConfigAgent.role)
+    setAgentRuntimeId(selectedConfigAgent.runtime_id)
+    setAgentModelHint(selectedConfigAgent.model_hint)
+    setAgentInstructions(selectedConfigAgent.instructions)
+  }, [runtimes.data, selectedConfigAgent])
 
   useEffect(() => {
     if (!availableTags.some((tag) => tag.id === selectedTagId)) {
@@ -265,29 +453,38 @@ export default function IssueDetail({
       <div className="max-w-3xl mx-auto px-8 py-6">
         <div className="mb-6">
           <div className="mb-2 flex flex-wrap items-center gap-3">
-            <span className={`${labelStyle} font-mono text-zinc-500`}>
-              {issue.data.identifier}
-            </span>
+            <span className={`${labelStyle} font-mono text-zinc-500`}>{issue.data.identifier}</span>
             <span className={`${labelStyle} font-medium text-amber-500`}>
               {displayLabel(issue.data.priority)}
             </span>
-            <span className={`${labelStyle} text-zinc-500`}>
-              {displayLabel(issue.data.status)}
-            </span>
+            <span className={`${labelStyle} text-zinc-500`}>{displayLabel(issue.data.status)}</span>
           </div>
-          <h2 className="text-xl font-semibold text-zinc-100">
-            {issue.data.title}
-          </h2>
-          <p className="mt-1 text-sm text-zinc-500">
-            Created {formatDate(issue.data.created_at)}
-          </p>
+          <h2 className="text-xl font-semibold text-zinc-100">{issue.data.title}</h2>
+          <p className="mt-1 text-sm text-zinc-500">Created {formatDate(issue.data.created_at)}</p>
+          {activeAssignments.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {activeAssignments.map((assignment) => (
+                <span
+                  key={assignment.id}
+                  className="inline-flex items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300"
+                >
+                  {assignment.agent_id
+                    ? (agentById.get(assignment.agent_id)?.name ?? 'Deleted agent')
+                    : 'Deleted agent'}
+                  <span className="text-zinc-500">{displayLabel(assignment.status)}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {mutationError && (
           <div className="mb-5 rounded border border-red-900/50 bg-red-950/20 px-3 py-2">
             <p className="text-sm text-red-300">Update failed</p>
             <p className="mt-1 text-sm text-zinc-500">{mutationError}</p>
-            <p className="mt-1 text-xs text-zinc-500">Adjust the fields or retry the same action.</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              Adjust the fields or retry the same action.
+            </p>
           </div>
         )}
 
@@ -296,7 +493,11 @@ export default function IssueDetail({
           <div className="space-y-3">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-zinc-500">Title</span>
-              <input value={title} onChange={(event) => setTitle(event.target.value)} className={inputStyle} />
+              <input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                className={inputStyle}
+              />
             </label>
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-zinc-500">Description</span>
@@ -310,7 +511,11 @@ export default function IssueDetail({
             <div className="grid grid-cols-3 gap-3">
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-zinc-500">Status</span>
-                <select value={status} onChange={(event) => setStatus(event.target.value)} className={inputStyle}>
+                <select
+                  value={status}
+                  onChange={(event) => setStatus(event.target.value)}
+                  className={inputStyle}
+                >
                   <option value="todo">Todo</option>
                   <option value="in_progress">In Progress</option>
                   <option value="blocked">Blocked</option>
@@ -319,7 +524,11 @@ export default function IssueDetail({
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-zinc-500">Priority</span>
-                <select value={priority} onChange={(event) => setPriority(event.target.value)} className={inputStyle}>
+                <select
+                  value={priority}
+                  onChange={(event) => setPriority(event.target.value)}
+                  className={inputStyle}
+                >
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
@@ -327,9 +536,45 @@ export default function IssueDetail({
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-zinc-500">Assignee</span>
-                <input value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)} className={inputStyle} />
+                <select
+                  value={assigneeId}
+                  onChange={(event) => setAssigneeId(event.target.value)}
+                  disabled={agents.status !== 'success'}
+                  className={inputStyle}
+                >
+                  <option value="">Unassigned</option>
+                  {selectedAgent && !selectedAgent.is_assignable && (
+                    <option value={selectedAgent.id}>{selectedAgent.name} (not assignable)</option>
+                  )}
+                  {assignableAgents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                      {agent.model_hint ? ` · ${agent.model_hint}` : ''}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
+            {(agents.status === 'loading' || runtimes.status === 'loading') && (
+              <p className="text-xs text-zinc-500">Loading agent runtime state...</p>
+            )}
+            {(agents.status === 'error' || runtimes.status === 'error') && (
+              <SectionError
+                title="Agents failed to load"
+                error={agents.error ?? runtimes.error}
+                onRetry={onRetryAgents}
+              />
+            )}
+            {agents.status === 'success' && agents.data.length === 0 && (
+              <p className="text-xs text-zinc-500">No agents configured yet.</p>
+            )}
+            {agents.status === 'success' &&
+              agents.data.length > 0 &&
+              assignableAgents.length === 0 && (
+                <p className="text-xs text-amber-300">
+                  No assignable agents. Bind an agent to a healthy runtime before assigning work.
+                </p>
+              )}
             <button
               type="button"
               disabled={mutationPending || title.trim() === ''}
@@ -351,12 +596,190 @@ export default function IssueDetail({
 
         <section className="mb-8">
           <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium text-zinc-300">Assignments</h3>
+            {assignments.status === 'loading' && (
+              <span className="text-xs text-zinc-500">Loading assignments...</span>
+            )}
+          </div>
+          {assignments.status === 'error' ? (
+            <SectionError
+              title="Assignments failed to load"
+              error={assignments.error}
+              onRetry={onRetryAssignments}
+            />
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={selectedAssignmentAgentId}
+                  onChange={(event) => setSelectedAssignmentAgentId(event.target.value)}
+                  disabled={mutationPending || assignableAgents.length === 0}
+                  className={inputStyle}
+                >
+                  {assignableAgents.length === 0 ? (
+                    <option value="">No assignable agents</option>
+                  ) : (
+                    assignableAgents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                        {agent.model_hint ? ` · ${agent.model_hint}` : ''}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <button
+                  type="button"
+                  disabled={mutationPending || selectedAssignmentAgentId === ''}
+                  onClick={() => {
+                    void onCreateAssignment(selectedAssignmentAgentId, {
+                      type: 'issue_detail',
+                    }).catch(() => undefined)
+                  }}
+                  className={buttonStyle}
+                >
+                  Assign Agent
+                </button>
+              </div>
+              {assignments.data.length === 0 && (
+                <p className="text-sm text-zinc-500">No assignments yet</p>
+              )}
+              {assignments.data.map((assignment) => (
+                <AssignmentItem
+                  key={assignment.id}
+                  assignment={assignment}
+                  agent={assignment.agent_id ? (agentById.get(assignment.agent_id) ?? null) : null}
+                  disabled={mutationPending}
+                  onCancel={onCancelAssignment}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="mb-8">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium text-zinc-300">Agents</h3>
+            {(agents.status === 'loading' || runtimes.status === 'loading') && (
+              <span className="text-xs text-zinc-500">Loading agents...</span>
+            )}
+          </div>
+          {agents.status === 'error' || runtimes.status === 'error' ? (
+            <SectionError
+              title="Agent configuration failed to load"
+              error={agents.error ?? runtimes.error}
+              onRetry={onRetryAgents}
+            />
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">Agent</span>
+                  <select
+                    value={selectedConfigAgentId}
+                    onChange={(event) => setSelectedConfigAgentId(event.target.value)}
+                    className={inputStyle}
+                  >
+                    <option value="">New agent</option>
+                    {agents.data.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">Runtime</span>
+                  <select
+                    value={agentRuntimeId}
+                    onChange={(event) => setAgentRuntimeId(event.target.value)}
+                    className={inputStyle}
+                  >
+                    <option value="">No runtime</option>
+                    {runtimes.data.map((runtime) => (
+                      <option key={runtime.id} value={runtime.id}>
+                        {runtime.display_name} ({displayLabel(runtime.health_status)})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">Name</span>
+                  <input
+                    value={agentName}
+                    onChange={(event) => setAgentName(event.target.value)}
+                    className={inputStyle}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">Role</span>
+                  <input
+                    value={agentRole}
+                    onChange={(event) => setAgentRole(event.target.value)}
+                    className={inputStyle}
+                  />
+                </label>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Model</span>
+                <input
+                  value={agentModelHint}
+                  onChange={(event) => setAgentModelHint(event.target.value)}
+                  className={inputStyle}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-zinc-500">Instructions</span>
+                <textarea
+                  value={agentInstructions}
+                  onChange={(event) => setAgentInstructions(event.target.value)}
+                  rows={3}
+                  className={inputStyle}
+                />
+              </label>
+              {runtimes.status === 'success' && runtimes.data.length === 0 && (
+                <p className="text-xs text-zinc-500">
+                  Discover a runtime before this agent can become assignable.
+                </p>
+              )}
+              <button
+                type="button"
+                disabled={mutationPending || agentName.trim() === ''}
+                onClick={async () => {
+                  const input = {
+                    name: agentName,
+                    role: agentRole,
+                    runtime_id: agentRuntimeId,
+                    model_hint: agentModelHint,
+                    instructions: agentInstructions,
+                  }
+                  try {
+                    if (selectedConfigAgentId) {
+                      await onUpdateAgent(selectedConfigAgentId, input)
+                    } else {
+                      await onCreateAgent(input)
+                    }
+                  } catch {
+                    // Parent renders the recoverable mutation error.
+                  }
+                }}
+                className={buttonStyle}
+              >
+                {selectedConfigAgentId ? 'Save Agent' : 'Create Agent'}
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section className="mb-8">
+          <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-zinc-300">Tags</h3>
             {(projectTags.status === 'loading' || issueTags.status === 'loading') && (
               <span className="text-xs text-zinc-500">Loading tags...</span>
             )}
           </div>
-          {(projectTags.status === 'error' || issueTags.status === 'error') ? (
+          {projectTags.status === 'error' || issueTags.status === 'error' ? (
             <SectionError
               title="Tags failed to load"
               error={projectTags.error ?? issueTags.error}
@@ -365,13 +788,18 @@ export default function IssueDetail({
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
-                {issueTags.data.length === 0 && <p className="text-sm text-zinc-500">No tags attached</p>}
+                {issueTags.data.length === 0 && (
+                  <p className="text-sm text-zinc-500">No tags attached</p>
+                )}
                 {issueTags.data.map((tag) => (
                   <span
                     key={tag.id}
                     className="inline-flex items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-sm text-zinc-300"
                   >
-                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color || '#71717a' }} />
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: tag.color || '#71717a' }}
+                    />
                     {tag.name}
                     <button
                       type="button"
@@ -452,20 +880,35 @@ export default function IssueDetail({
         <section>
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-zinc-300">Comments</h3>
-            {comments.status === 'loading' && <span className="text-xs text-zinc-500">Loading comments...</span>}
+            {comments.status === 'loading' && (
+              <span className="text-xs text-zinc-500">Loading comments...</span>
+            )}
           </div>
           {comments.status === 'error' ? (
-            <SectionError title="Comments failed to load" error={comments.error} onRetry={onRetryComments} />
+            <SectionError
+              title="Comments failed to load"
+              error={comments.error}
+              onRetry={onRetryComments}
+            />
           ) : (
             <div className="space-y-3">
-              {comments.data.length === 0 && <p className="text-sm text-zinc-500">No comments yet</p>}
+              {comments.data.length === 0 && (
+                <p className="text-sm text-zinc-500">No comments yet</p>
+              )}
               {comments.data.map((comment) => (
                 <CommentItem
                   key={comment.id}
                   comment={comment}
                   disabled={mutationPending}
+                  assignableAgents={assignableAgents}
                   onUpdate={onUpdateComment}
                   onDelete={onDeleteComment}
+                  onAssign={(agentId, commentId) =>
+                    onCreateAssignment(agentId, {
+                      type: 'comment',
+                      id: commentId,
+                    })
+                  }
                 />
               ))}
               <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3">
