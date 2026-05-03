@@ -333,6 +333,43 @@ func TestRuntimeValidatePersistsStatus(t *testing.T) {
 	}
 }
 
+func TestRuntimeUpdatePersistsKindMismatch(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+
+	var codexRuntime store.Runtime
+	for _, runtime := range discovered.Runtimes {
+		if runtime.Kind == "codex" {
+			codexRuntime = runtime
+		}
+	}
+	if codexRuntime.ID == "" {
+		t.Fatalf("expected codex runtime in discovery response: %#v", discovered)
+	}
+
+	claude := writeHandlerExecutable(t, "claude", "#!/bin/sh\necho 'claude 2.0.0'\n")
+	assertStatus(t, router, http.MethodPut, "/api/runtimes/"+codexRuntime.ID, `{"binary_path":`+mustJSONQuote(t, claude)+`}`, http.StatusConflict)
+
+	listed := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodGet, "/api/runtimes", ``, http.StatusOK)
+	for _, runtime := range listed.Runtimes {
+		if runtime.ID == codexRuntime.ID {
+			if runtime.BinaryPath != claude || runtime.HealthStatus != "degraded" || runtime.HealthReason != "runtime_kind_mismatch" {
+				t.Fatalf("expected mismatch update to persist degraded state, got %#v", runtime)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected updated runtime in list: %#v", listed.Runtimes)
+}
+
 func TestInteractionEndpointContracts(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()

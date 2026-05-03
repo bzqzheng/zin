@@ -175,14 +175,14 @@ func (h *RuntimeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		runtime.BinaryPath = binaryPath
 		runtime = applyProbeToRuntime(runtime, runtimeprobe.Probe(runtime.Kind, binaryPath))
-		if runtime.HealthReason == runtimeprobe.ReasonRuntimeMismatch {
-			response.Error(w, http.StatusConflict, "RUNTIME_KIND_MISMATCH", "runtime kind does not match binary output", "")
-			return
-		}
 	}
 
 	if err := h.repo.Update(runtime); err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update runtime", err.Error())
+		return
+	}
+	if runtime.HealthReason == runtimeprobe.ReasonRuntimeMismatch {
+		response.Error(w, http.StatusConflict, "RUNTIME_KIND_MISMATCH", "runtime kind does not match binary output", "")
 		return
 	}
 	response.JSON(w, http.StatusOK, runtimeResponse{Runtime: runtime})
