@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
@@ -9,12 +10,13 @@ import (
 )
 
 type IssueHandler struct {
+	db          *sql.DB
 	repo        *store.IssueRepository
 	projectRepo *store.ProjectRepository
 }
 
-func NewIssueHandler(repo *store.IssueRepository, projectRepo *store.ProjectRepository) *IssueHandler {
-	return &IssueHandler{repo: repo, projectRepo: projectRepo}
+func NewIssueHandler(db *sql.DB, repo *store.IssueRepository, projectRepo *store.ProjectRepository) *IssueHandler {
+	return &IssueHandler{db: db, repo: repo, projectRepo: projectRepo}
 }
 
 type createIssueRequest struct {
@@ -64,8 +66,30 @@ func (h *IssueHandler) Create(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "title is required", "")
 		return
 	}
+	if req.Status != "" && !validIssueStatus(req.Status) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid status", "")
+		return
+	}
+	if req.Priority != "" && !validIssuePriority(req.Priority) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid priority", "")
+		return
+	}
 
-	issue, err := h.repo.Create(projectID, req.Title, req.Description, req.Status, req.Priority)
+	var issue *store.Issue
+	err = store.WithTx(h.db, func(repos store.Repositories) error {
+		var err error
+		issue, err = repos.Issues.Create(projectID, req.Title, req.Description, req.Status, req.Priority)
+		if err != nil {
+			return err
+		}
+		_, err = repos.Activity.Create(store.CreateIssueActivityInput{
+			IssueID:      issue.ID,
+			Type:         "issue.created",
+			Summary:      "Created work item",
+			MetadataJSON: `{"issue_id":"` + issue.ID + `"}`,
+		})
+		return err
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "FOREIGN KEY") {
 			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid project reference", "")
@@ -119,6 +143,20 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
 		return
 	}
+	if req.Status != nil {
+		if !validIssueStatus(*req.Status) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid status", "")
+			return
+		}
+	}
+	if req.Priority != nil {
+		if !validIssuePriority(*req.Priority) {
+			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid priority", "")
+			return
+		}
+	}
+
+	before := *issue
 	if req.Title != nil {
 		issue.Title = *req.Title
 	}
@@ -138,11 +176,30 @@ func (h *IssueHandler) Update(w http.ResponseWriter, r *http.Request) {
 		issue.CreatorID = *req.CreatorID
 	}
 
-	if err := h.repo.Update(issue); err != nil {
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		if err := repos.Issues.Update(issue); err != nil {
+			return err
+		}
+		inputs, err := store.ActivityInputsForIssueChanges(issue.ID, "", store.MeaningfulIssueChanges(&before, issue))
+		if err != nil {
+			return err
+		}
+		for _, input := range inputs {
+			if _, err := repos.Activity.Create(input); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to update issue", err.Error())
 		return
 	}
-	response.JSON(w, http.StatusOK, issue)
+	updated, err := h.repo.GetByID(id)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to get updated issue", err.Error())
+		return
+	}
+	response.JSON(w, http.StatusOK, updated)
 }
 
 func (h *IssueHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
@@ -169,13 +226,37 @@ func (h *IssueHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "status is required", "")
 		return
 	}
+	if !validIssueStatus(req.Status) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid status", "")
+		return
+	}
 
-	if err := h.repo.UpdateStatus(id, req.Status); err != nil {
+	before := *issue
+	issue.Status = req.Status
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		if err := repos.Issues.UpdateStatus(id, req.Status); err != nil {
+			return err
+		}
+		inputs, err := store.ActivityInputsForIssueChanges(issue.ID, "", store.MeaningfulIssueChanges(&before, issue))
+		if err != nil {
+			return err
+		}
+		for _, input := range inputs {
+			if _, err := repos.Activity.Create(input); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to update issue status", err.Error())
 		return
 	}
-	issue.Status = req.Status
-	response.JSON(w, http.StatusOK, issue)
+	updated, err := h.repo.GetByID(id)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to get updated issue", err.Error())
+		return
+	}
+	response.JSON(w, http.StatusOK, updated)
 }
 
 func (h *IssueHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -195,4 +276,22 @@ func (h *IssueHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func validIssueStatus(status string) bool {
+	switch status {
+	case "todo", "in_progress", "done", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func validIssuePriority(priority string) bool {
+	switch priority {
+	case "low", "medium", "high":
+		return true
+	default:
+		return false
+	}
 }

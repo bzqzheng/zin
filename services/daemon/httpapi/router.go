@@ -11,6 +11,7 @@ func NewRouter(
 	health *handler.HealthHandler,
 	projects *handler.ProjectHandler,
 	issues *handler.IssueHandler,
+	interactions *handler.InteractionHandler,
 	agents *handler.AgentHandler,
 	shutdownCh chan<- struct{},
 ) http.Handler {
@@ -30,6 +31,18 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/issues/{id}", issues.Update)
 	mux.HandleFunc("DELETE /api/issues/{id}", issues.Delete)
 	mux.HandleFunc("PUT /api/issues/{id}/status", issues.UpdateStatus)
+	mux.HandleFunc("GET /api/projects/{pid}/tags", interactions.ListProjectTags)
+	mux.HandleFunc("POST /api/projects/{pid}/tags", interactions.CreateProjectTag)
+	mux.HandleFunc("PUT /api/tags/{id}", interactions.UpdateTag)
+	mux.HandleFunc("DELETE /api/tags/{id}", interactions.DeleteTag)
+	mux.HandleFunc("GET /api/issues/{id}/tags", interactions.ListIssueTags)
+	mux.HandleFunc("POST /api/issues/{id}/tags", interactions.AttachIssueTag)
+	mux.HandleFunc("DELETE /api/issues/{id}/tags/{tag_id}", interactions.DetachIssueTag)
+	mux.HandleFunc("GET /api/issues/{id}/comments", interactions.ListComments)
+	mux.HandleFunc("POST /api/issues/{id}/comments", interactions.CreateComment)
+	mux.HandleFunc("PUT /api/comments/{id}", interactions.UpdateComment)
+	mux.HandleFunc("DELETE /api/comments/{id}", interactions.DeleteComment)
+	mux.HandleFunc("GET /api/issues/{id}/activity", interactions.ListActivity)
 
 	mux.HandleFunc("GET /api/agents", agents.List)
 	mux.HandleFunc("POST /api/agents", agents.Create)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/bzqzheng/zin/services/daemon/config"
@@ -28,11 +29,15 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 
 	projectRepo := store.NewProjectRepository(database)
 	issueRepo := store.NewIssueRepository(database)
+	tagRepo := store.NewTagRepository(database)
+	commentRepo := store.NewIssueCommentRepository(database)
+	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(issueRepo, projectRepo),
+		handler.NewIssueHandler(database, issueRepo, projectRepo),
+		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo),
 		make(chan struct{}, 1),
 	)
@@ -167,6 +172,120 @@ func TestErrorEnvelopeAlwaysIncludesDetails(t *testing.T) {
 	}
 }
 
+func TestInteractionEndpointContracts(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	project, err := projectRepo.Create("Interactions", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Work item"})
+
+	assertStatus(t, router, http.MethodPost, "/api/projects/"+project.ID+"/tags", `{"name":"   "}`, http.StatusBadRequest)
+
+	tag := requestJSON[store.Tag](t, router, http.MethodPost, "/api/projects/"+project.ID+"/tags", `{"name":"Launch","color":"#0f766e"}`, http.StatusCreated)
+	if tag.Name != "Launch" || tag.Color != "#0f766e" {
+		t.Fatalf("unexpected created tag: %#v", tag)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/projects/"+project.ID+"/tags", `{"name":" launch "}`, http.StatusConflict)
+
+	tags := requestJSON[[]store.Tag](t, router, http.MethodGet, "/api/projects/"+project.ID+"/tags", ``, http.StatusOK)
+	if len(tags) != 1 || tags[0].ID != tag.ID {
+		t.Fatalf("expected project tag list to contain created tag, got %#v", tags)
+	}
+
+	updated := requestJSON[store.Tag](t, router, http.MethodPut, "/api/tags/"+tag.ID, `{"name":"Release","color":"#155e75"}`, http.StatusOK)
+	if updated.Name != "Release" || updated.Color != "#155e75" {
+		t.Fatalf("unexpected updated tag: %#v", updated)
+	}
+
+	attached := requestJSON[[]store.Tag](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/tags", `{"tag_id":"`+tag.ID+`"}`, http.StatusOK)
+	if len(attached) != 1 || attached[0].ID != tag.ID {
+		t.Fatalf("expected attached tag, got %#v", attached)
+	}
+	duplicateAttach := requestJSON[[]store.Tag](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/tags", `{"tag_id":"`+tag.ID+`"}`, http.StatusOK)
+	if len(duplicateAttach) != 1 {
+		t.Fatalf("duplicate attach should be idempotent, got %#v", duplicateAttach)
+	}
+	createdAttach := requestJSON[[]store.Tag](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/tags", `{"name":"Design"}`, http.StatusOK)
+	if len(createdAttach) != 2 {
+		t.Fatalf("expected create-and-attach to return two tags, got %#v", createdAttach)
+	}
+	var designTagID string
+	for _, tag := range createdAttach {
+		if tag.Name == "Design" {
+			designTagID = tag.ID
+		}
+	}
+	if designTagID == "" {
+		t.Fatalf("expected create-and-attach response to include Design tag, got %#v", createdAttach)
+	}
+	assertStatus(t, router, http.MethodDelete, "/api/tags/"+designTagID, ``, http.StatusNoContent)
+	assertStatus(t, router, http.MethodDelete, "/api/tags/"+designTagID, ``, http.StatusNotFound)
+
+	assertStatus(t, router, http.MethodDelete, "/api/issues/"+issue.ID+"/tags/"+tag.ID, ``, http.StatusNoContent)
+	assertStatus(t, router, http.MethodDelete, "/api/issues/"+issue.ID+"/tags/"+tag.ID, ``, http.StatusNotFound)
+
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/comments", `{"body":"   "}`, http.StatusBadRequest)
+	comment := requestJSON[map[string]interface{}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/comments", `{"body":"First comment","author_name":"Bright"}`, http.StatusCreated)
+	commentID, _ := comment["id"].(string)
+	if commentID == "" || comment["body"] != "First comment" || comment["author_name"] != "You" {
+		t.Fatalf("unexpected comment: %#v", comment)
+	}
+	comments := requestJSON[[]map[string]interface{}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/comments", ``, http.StatusOK)
+	if len(comments) != 1 || comments[0]["id"] != commentID {
+		t.Fatalf("expected one listed comment, got %#v", comments)
+	}
+	edited := requestJSON[map[string]interface{}](t, router, http.MethodPut, "/api/comments/"+commentID, `{"body":"Edited comment"}`, http.StatusOK)
+	if edited["body"] != "Edited comment" {
+		t.Fatalf("expected edited comment body, got %#v", edited)
+	}
+	assertStatus(t, router, http.MethodDelete, "/api/comments/"+commentID, ``, http.StatusNoContent)
+	assertStatus(t, router, http.MethodDelete, "/api/comments/"+commentID, ``, http.StatusNotFound)
+
+	events := requestJSON[[]map[string]interface{}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/activity", ``, http.StatusOK)
+	gotTypes := map[string]bool{}
+	for _, event := range events {
+		typ, _ := event["type"].(string)
+		gotTypes[typ] = true
+		if _, ok := event["metadata"].(map[string]interface{}); !ok {
+			t.Fatalf("expected metadata object for event %#v", event)
+		}
+	}
+	for _, typ := range []string{"issue.created", "tag.added", "tag.removed", "comment.added", "comment.updated", "comment.deleted"} {
+		if !gotTypes[typ] {
+			t.Fatalf("missing activity type %s in %#v", typ, gotTypes)
+		}
+	}
+}
+
+func TestInteractionNotFoundAndValidationPaths(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	project, err := projectRepo.Create("Validation", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Work item"})
+
+	assertStatus(t, router, http.MethodGet, "/api/projects/missing/tags", ``, http.StatusNotFound)
+	assertStatus(t, router, http.MethodGet, "/api/issues/missing/tags", ``, http.StatusNotFound)
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/tags", `{"tag_id":"missing"}`, http.StatusNotFound)
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/tags", `{`, http.StatusBadRequest)
+	assertStatus(t, router, http.MethodPut, "/api/tags/missing", `{"name":"Missing"}`, http.StatusNotFound)
+	assertStatus(t, router, http.MethodDelete, "/api/tags/missing", ``, http.StatusNotFound)
+	assertStatus(t, router, http.MethodGet, "/api/issues/missing/comments", ``, http.StatusNotFound)
+	assertStatus(t, router, http.MethodPost, "/api/issues/missing/comments", `{"body":"x"}`, http.StatusNotFound)
+	assertStatus(t, router, http.MethodPut, "/api/comments/missing", `{"body":"x"}`, http.StatusNotFound)
+	assertStatus(t, router, http.MethodGet, "/api/issues/missing/activity", ``, http.StatusNotFound)
+	assertStatus(t, router, http.MethodPost, "/api/projects/"+project.ID+"/issues", `{"title":"Bad","status":"later"}`, http.StatusBadRequest)
+	assertStatus(t, router, http.MethodPost, "/api/projects/"+project.ID+"/issues", `{"title":"Bad","priority":"urgent"}`, http.StatusBadRequest)
+	assertStatus(t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"priority":"urgent"}`, http.StatusBadRequest)
+	assertStatus(t, router, http.MethodPut, "/api/issues/"+issue.ID+"/status", `{"status":"later"}`, http.StatusBadRequest)
+}
+
 func postIssue(t *testing.T, router http.Handler, projectID string, body map[string]string) store.Issue {
 	t.Helper()
 
@@ -186,4 +305,29 @@ func postIssue(t *testing.T, router http.Handler, projectID string, body map[str
 		t.Fatalf("decode issue response: %v", err)
 	}
 	return issue
+}
+
+func requestJSON[T any](t *testing.T, router http.Handler, method, path, body string, want int) T {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != want {
+		t.Fatalf("%s %s: expected %d, got %d: %s", method, path, want, rec.Code, rec.Body.String())
+	}
+	var result T
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode %s %s: %v; body=%s", method, path, err, rec.Body.String())
+	}
+	return result
+}
+
+func assertStatus(t *testing.T, router http.Handler, method, path, body string, want int) {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != want {
+		t.Fatalf("%s %s: expected %d, got %d: %s", method, path, want, rec.Code, rec.Body.String())
+	}
 }

@@ -84,6 +84,25 @@ func (r *TagRepository) GetByID(id string) (*Tag, error) {
 	return tag, nil
 }
 
+func (r *TagRepository) GetByProjectName(projectID, name string) (*Tag, error) {
+	tag := &Tag{}
+	var createdAt, updatedAt string
+	err := r.q.QueryRow(
+		"SELECT id, project_id, name, color, created_at, updated_at FROM tags WHERE project_id = ? AND lower(name) = lower(?)",
+		projectID, strings.TrimSpace(name),
+	).Scan(&tag.ID, &tag.ProjectID, &tag.Name, &tag.Color, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get tag by project name: %w", err)
+	}
+	if err := parseTagTimes(tag, createdAt, updatedAt); err != nil {
+		return nil, fmt.Errorf("get tag by project name: %w", err)
+	}
+	return tag, nil
+}
+
 func (r *TagRepository) ListByProject(projectID string) ([]*Tag, error) {
 	rows, err := r.q.Query(
 		"SELECT id, project_id, name, color, created_at, updated_at FROM tags WHERE project_id = ? ORDER BY lower(name) ASC",
@@ -110,6 +129,35 @@ func (r *TagRepository) ListByIssue(issueID string) ([]*Tag, error) {
 	}
 	defer rows.Close()
 	return scanTags(rows)
+}
+
+func (r *TagRepository) AttachedIssueIDs(tagID string) ([]string, error) {
+	rows, err := r.q.Query("SELECT issue_id FROM issue_tags WHERE tag_id = ? ORDER BY issue_id", tagID)
+	if err != nil {
+		return nil, fmt.Errorf("list tag attached issue ids: %w", err)
+	}
+	defer rows.Close()
+
+	var issueIDs []string
+	for rows.Next() {
+		var issueID string
+		if err := rows.Scan(&issueID); err != nil {
+			return nil, fmt.Errorf("scan tag attached issue id: %w", err)
+		}
+		issueIDs = append(issueIDs, issueID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tag attached issue ids: %w", err)
+	}
+	return issueIDs, nil
+}
+
+func (r *TagRepository) IsAttachedToIssue(issueID, tagID string) (bool, error) {
+	var count int
+	if err := r.q.QueryRow("SELECT COUNT(*) FROM issue_tags WHERE issue_id = ? AND tag_id = ?", issueID, tagID).Scan(&count); err != nil {
+		return false, fmt.Errorf("check issue tag attachment: %w", err)
+	}
+	return count > 0, nil
 }
 
 func (r *TagRepository) Update(tag *Tag) error {

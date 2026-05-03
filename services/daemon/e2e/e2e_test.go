@@ -19,47 +19,9 @@ func TestE2E(t *testing.T) {
 	os.Setenv("ZIN_DATA_DIR", dir)
 	defer os.Unsetenv("ZIN_DATA_DIR")
 
-	daemonPath := findDaemonBinary(t)
-	if daemonPath == "" {
-		t.Skip("daemon binary not found, run: go build -o ./bin/daemon ./services/daemon/cmd/daemon/")
-	}
-
-	cmd := exec.Command(daemonPath, "--port", "0", "--data-dir", dir)
-	cmd.Env = append(os.Environ(), "ZIN_DATA_DIR="+dir)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start daemon: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
-	}
-	defer func() {
-		cmd.Process.Signal(os.Interrupt)
-		cmd.Wait()
-	}()
-
-	var port string
-	deadline := time.After(5 * time.Second)
-	for port == "" {
-		select {
-		case <-deadline:
-			t.Fatalf("daemon did not emit port within 5s\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
-		default:
-		}
-		output := stdout.String()
-		if idx := strings.Index(output, "\n"); idx != -1 {
-			port = strings.TrimSpace(output[:idx])
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if port == "" {
-		t.Fatalf("no port output from daemon\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
-	}
-
-	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
+	daemonPath := ensureDaemonBinary(t)
+	baseURL, stop := startDaemon(t, daemonPath, dir)
+	defer stop()
 
 	t.Run("health check", func(t *testing.T) {
 		var result map[string]interface{}
@@ -79,6 +41,9 @@ func TestE2E(t *testing.T) {
 	})
 
 	var projectID string
+	var issueID string
+	var tagID string
+	var commentID string
 
 	t.Run("create project", func(t *testing.T) {
 		body := map[string]string{
@@ -110,7 +75,7 @@ func TestE2E(t *testing.T) {
 		if err := apiPost(url, body, &result); err != nil {
 			t.Fatalf("create issue failed: %v", err)
 		}
-		issueID, _ := result["id"].(string)
+		issueID, _ = result["id"].(string)
 		if issueID == "" {
 			t.Fatal("expected non-empty issue id")
 		}
@@ -122,6 +87,48 @@ func TestE2E(t *testing.T) {
 		}
 		if result["position"] != float64(1) {
 			t.Errorf("expected generated position 1, got '%v'", result["position"])
+		}
+	})
+
+	t.Run("create and attach tag", func(t *testing.T) {
+		var result map[string]interface{}
+		url := fmt.Sprintf("%s/api/projects/%s/tags", baseURL, projectID)
+		if err := apiPost(url, map[string]string{"name": "Launch", "color": "#0f766e"}, &result); err != nil {
+			t.Fatalf("create tag failed: %v", err)
+		}
+		tagID, _ = result["id"].(string)
+		if tagID == "" {
+			t.Fatal("expected non-empty tag id")
+		}
+
+		var tags []map[string]interface{}
+		url = fmt.Sprintf("%s/api/issues/%s/tags", baseURL, issueID)
+		if err := apiPost(url, map[string]string{"tag_id": tagID}, &tags); err != nil {
+			t.Fatalf("attach tag failed: %v", err)
+		}
+		if len(tags) != 1 || tags[0]["id"] != tagID {
+			t.Fatalf("expected attached tag, got %#v", tags)
+		}
+	})
+
+	t.Run("create comment and activity", func(t *testing.T) {
+		var result map[string]interface{}
+		url := fmt.Sprintf("%s/api/issues/%s/comments", baseURL, issueID)
+		if err := apiPost(url, map[string]string{"body": "Persist this comment", "author_name": "You"}, &result); err != nil {
+			t.Fatalf("create comment failed: %v", err)
+		}
+		commentID, _ = result["id"].(string)
+		if commentID == "" {
+			t.Fatal("expected non-empty comment id")
+		}
+
+		var events []map[string]interface{}
+		url = fmt.Sprintf("%s/api/issues/%s/activity", baseURL, issueID)
+		if err := apiGet(url, &events); err != nil {
+			t.Fatalf("list activity failed: %v", err)
+		}
+		if len(events) < 3 {
+			t.Fatalf("expected creation/tag/comment activity, got %#v", events)
 		}
 	})
 
@@ -149,6 +156,114 @@ func TestE2E(t *testing.T) {
 			t.Errorf("expected title 'E2E Test Issue', got '%v'", results[0]["title"])
 		}
 	})
+
+	stop()
+
+	baseURL, stop = startDaemon(t, daemonPath, dir)
+	defer stop()
+
+	t.Run("verify persisted state after daemon restart", func(t *testing.T) {
+		var project map[string]interface{}
+		if err := apiGet(fmt.Sprintf("%s/api/projects/%s", baseURL, projectID), &project); err != nil {
+			t.Fatalf("get persisted project failed: %v", err)
+		}
+		if project["name"] != "E2E Test Project" {
+			t.Fatalf("expected persisted project name, got %#v", project)
+		}
+
+		var issue map[string]interface{}
+		if err := apiGet(fmt.Sprintf("%s/api/issues/%s", baseURL, issueID), &issue); err != nil {
+			t.Fatalf("get persisted issue failed: %v", err)
+		}
+		if issue["title"] != "E2E Test Issue" {
+			t.Fatalf("expected persisted issue title, got %#v", issue)
+		}
+
+		var tags []map[string]interface{}
+		if err := apiGet(fmt.Sprintf("%s/api/issues/%s/tags", baseURL, issueID), &tags); err != nil {
+			t.Fatalf("get persisted tags failed: %v", err)
+		}
+		if len(tags) != 1 || tags[0]["id"] != tagID {
+			t.Fatalf("expected persisted tag attachment, got %#v", tags)
+		}
+
+		var comments []map[string]interface{}
+		if err := apiGet(fmt.Sprintf("%s/api/issues/%s/comments", baseURL, issueID), &comments); err != nil {
+			t.Fatalf("get persisted comments failed: %v", err)
+		}
+		if len(comments) != 1 || comments[0]["id"] != commentID {
+			t.Fatalf("expected persisted comment, got %#v", comments)
+		}
+
+		var events []map[string]interface{}
+		if err := apiGet(fmt.Sprintf("%s/api/issues/%s/activity", baseURL, issueID), &events); err != nil {
+			t.Fatalf("get persisted activity failed: %v", err)
+		}
+		if len(events) < 3 {
+			t.Fatalf("expected persisted activity, got %#v", events)
+		}
+	})
+}
+
+func startDaemon(t *testing.T, daemonPath, dir string) (string, func()) {
+	t.Helper()
+
+	cmd := exec.Command(daemonPath, "--port", "0", "--data-dir", dir)
+	cmd.Env = append(os.Environ(), "ZIN_DATA_DIR="+dir)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start daemon: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	var port string
+	deadline := time.After(5 * time.Second)
+	for port == "" {
+		select {
+		case <-deadline:
+			cmd.Process.Signal(os.Interrupt)
+			cmd.Wait()
+			t.Fatalf("daemon did not emit port within 5s\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+		default:
+		}
+		output := stdout.String()
+		if idx := strings.Index(output, "\n"); idx != -1 {
+			port = strings.TrimSpace(output[:idx])
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stopped := false
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		shutdownURL := fmt.Sprintf("http://127.0.0.1:%s/shutdown", port)
+		resp, err := http.Post(shutdownURL, "application/json", bytes.NewReader([]byte(`{}`)))
+		if err == nil {
+			resp.Body.Close()
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Wait()
+		}()
+		select {
+		case <-time.After(3 * time.Second):
+			cmd.Process.Signal(os.Interrupt)
+			cmd.Wait()
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("daemon exited with error: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+			}
+		}
+	}
+
+	return fmt.Sprintf("http://127.0.0.1:%s", port), stop
 }
 
 func apiGet(url string, result interface{}) error {
@@ -200,6 +315,26 @@ func apiPost(url string, payload interface{}, result interface{}) error {
 	return nil
 }
 
+func ensureDaemonBinary(t *testing.T) string {
+	t.Helper()
+
+	if path := findDaemonBinary(t); path != "" {
+		return path
+	}
+
+	root := repoRoot(t)
+	path := filepath.Join(t.TempDir(), "daemon")
+	cmd := exec.Command("go", "build", "-o", path, "./services/daemon/cmd/daemon")
+	cmd.Dir = root
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build daemon binary: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	return path
+}
+
 func findDaemonBinary(t *testing.T) string {
 	t.Helper()
 
@@ -240,4 +375,23 @@ func findDaemonBinary(t *testing.T) string {
 	}
 
 	return ""
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(wd, "go.mod")); err == nil {
+			return wd
+		}
+		parent := filepath.Dir(wd)
+		if parent == wd {
+			t.Fatal("repo root with go.mod not found")
+		}
+		wd = parent
+	}
 }
