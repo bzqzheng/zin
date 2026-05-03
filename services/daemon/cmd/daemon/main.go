@@ -52,6 +52,9 @@ func run() error {
 
 	projectRepo := store.NewProjectRepository(database)
 	issueRepo := store.NewIssueRepository(database)
+	tagRepo := store.NewTagRepository(database)
+	commentRepo := store.NewIssueCommentRepository(database)
+	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
@@ -77,7 +80,8 @@ func run() error {
 	router := httpapi.NewRouter(
 		healthHandler,
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(issueRepo, projectRepo),
+		handler.NewIssueHandler(database, issueRepo, projectRepo),
+		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo),
 		shutdownCh,
 	)
