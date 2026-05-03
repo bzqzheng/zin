@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import IssueDetail, { type IssueUpdateInput } from './components/IssueDetail'
+import RuntimeSettings from './components/RuntimeSettings'
 import Timeline from './components/Timeline'
 import { useDaemon } from './daemon'
-import type { Issue, IssueActivity, IssueComment, Project, Tag } from './daemon'
+import type {
+  Issue,
+  IssueActivity,
+  IssueComment,
+  Project,
+  RuntimeDiscoveryResponse,
+  RuntimeDiscoverySummary,
+  RuntimeListResponse,
+  RuntimeMutationResponse,
+  RuntimeRecord,
+  Tag,
+} from './daemon'
 
 export type LoadStatus = 'idle' | 'loading' | 'success' | 'error'
 
@@ -91,6 +103,18 @@ const emptyLoadedActivity: ResourceState<IssueActivity[]> = {
   error: null,
 }
 
+const emptyRuntimes: ResourceState<RuntimeRecord[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedRuntimes: ResourceState<RuntimeRecord[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err)
 }
@@ -100,6 +124,19 @@ function jsonRequest(method: string, body?: unknown): RequestInit {
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
   }
+}
+
+function runtimeList(data: RuntimeListResponse | RuntimeRecord[]): RuntimeRecord[] {
+  return Array.isArray(data) ? data : data.runtimes
+}
+
+function mergeRuntime(
+  runtimes: RuntimeRecord[],
+  runtimePatch: RuntimeMutationResponse['runtime'],
+): RuntimeRecord[] {
+  return runtimes.map((runtime) =>
+    runtime.id === runtimePatch.id ? { ...runtime, ...runtimePatch } : runtime,
+  )
 }
 
 export default function App() {
@@ -114,10 +151,15 @@ export default function App() {
   const [issueTags, setIssueTags] = useState<ResourceState<Tag[]>>(emptyIssueTags)
   const [comments, setComments] = useState<ResourceState<IssueComment[]>>(emptyComments)
   const [activity, setActivity] = useState<ResourceState<IssueActivity[]>>(emptyActivity)
+  const [runtimes, setRuntimes] = useState<ResourceState<RuntimeRecord[]>>(emptyRuntimes)
+  const [runtimeDiscoverySummary, setRuntimeDiscoverySummary] = useState<RuntimeDiscoverySummary | null>(null)
   const [preferredProjectId, setPreferredProjectId] = useState<string | null>(null)
   const [preferredIssueId, setPreferredIssueId] = useState<string | null>(null)
+  const [activeView, setActiveView] = useState<'issues' | 'settings'>('issues')
   const [mutationPending, setMutationPending] = useState(false)
   const [mutationError, setMutationError] = useState<string | null>(null)
+  const [runtimeMutationPending, setRuntimeMutationPending] = useState(false)
+  const [runtimeMutationError, setRuntimeMutationError] = useState<string | null>(null)
 
   const selectedProjectId =
     projects.status === 'success'
@@ -193,6 +235,11 @@ export default function App() {
     [fetchApi],
   )
 
+  const fetchRuntimes = useCallback(
+    () => fetchApi<RuntimeListResponse | RuntimeRecord[]>('/api/runtimes'),
+    [fetchApi],
+  )
+
   const resetIssueInteractions = useCallback((loaded = false) => {
     setIssueTags(loaded ? emptyLoadedIssueTags : emptyIssueTags)
     setComments(loaded ? emptyLoadedComments : emptyComments)
@@ -205,9 +252,13 @@ export default function App() {
     setIssueDetail(emptyIssueDetail)
     setProjectTags(emptyProjectTags)
     resetIssueInteractions()
+    setRuntimes(emptyRuntimes)
+    setRuntimeDiscoverySummary(null)
     setPreferredProjectId(null)
     setPreferredIssueId(null)
+    setActiveView('issues')
     setMutationError(null)
+    setRuntimeMutationError(null)
   }, [resetIssueInteractions])
 
   const startDaemonOnce = useCallback(() => {
@@ -401,6 +452,21 @@ export default function App() {
     [baseURL, fetchActivity, selectedIssueId],
   )
 
+  const loadRuntimes = useCallback(async () => {
+    if (!baseURL) {
+      setRuntimes(emptyLoadedRuntimes)
+      return
+    }
+
+    setRuntimes((prev) => ({ ...prev, status: 'loading', error: null }))
+    try {
+      const data = await fetchRuntimes()
+      setRuntimes({ status: 'success', data: runtimeList(data), error: null })
+    } catch (err) {
+      setRuntimes({ status: 'error', data: [], error: errorMessage(err) })
+    }
+  }, [baseURL, fetchRuntimes])
+
   const reloadIssueContext = useCallback(
     async (
       issueId: string | null = selectedIssueId,
@@ -452,6 +518,58 @@ export default function App() {
       }
     }
   }, [])
+
+  const runRuntimeMutation = useCallback(async (operation: () => Promise<void>) => {
+    setRuntimeMutationPending(true)
+    setRuntimeMutationError(null)
+    try {
+      await operation()
+    } catch (err) {
+      setRuntimeMutationError(errorMessage(err))
+      throw err
+    } finally {
+      setRuntimeMutationPending(false)
+    }
+  }, [])
+
+  const discoverRuntimes = useCallback(async () => {
+    if (!baseURL) return
+
+    await runRuntimeMutation(async () => {
+      const data = await fetchApi<RuntimeDiscoveryResponse>(
+        '/api/runtimes/discover',
+        jsonRequest('POST', { path_overrides: {} }),
+      )
+      setRuntimes({ status: 'success', data: data.runtimes, error: null })
+      setRuntimeDiscoverySummary(data.summary)
+    })
+  }, [baseURL, fetchApi, runRuntimeMutation])
+
+  const updateRuntime = useCallback(
+    async (runtimeId: string, input: { display_name?: string; binary_path?: string }) => {
+      await runRuntimeMutation(async () => {
+        const data = await fetchApi<RuntimeMutationResponse>(
+          `/api/runtimes/${runtimeId}`,
+          jsonRequest('PUT', input),
+        )
+        setRuntimes((prev) => ({ ...prev, data: mergeRuntime(prev.data, data.runtime) }))
+      })
+    },
+    [fetchApi, runRuntimeMutation],
+  )
+
+  const validateRuntime = useCallback(
+    async (runtimeId: string) => {
+      await runRuntimeMutation(async () => {
+        const data = await fetchApi<RuntimeMutationResponse>(
+          '/api/runtimes/validate',
+          jsonRequest('POST', { runtime_id: runtimeId }),
+        )
+        setRuntimes((prev) => ({ ...prev, data: mergeRuntime(prev.data, data.runtime) }))
+      })
+    },
+    [fetchApi, runRuntimeMutation],
+  )
 
   const updateIssue = useCallback(
     async (input: IssueUpdateInput) => {
@@ -576,6 +694,13 @@ export default function App() {
     setMutationPending(false)
     setMutationError(null)
   }, [])
+
+  const openRuntimeSettings = useCallback(() => {
+    setActiveView('settings')
+    if (runtimes.status === 'idle') {
+      void loadRuntimes()
+    }
+  }, [loadRuntimes, runtimes.status])
 
   useEffect(() => {
     let cancelled = false
@@ -757,6 +882,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
       <Sidebar
+        activeView={activeView}
         daemonError={daemonError}
         daemonStatus={daemonStatus}
         projects={projects}
@@ -766,34 +892,51 @@ export default function App() {
         onRetryDaemon={connectDaemon}
         onRetryProjects={loadProjects}
         onRetryIssues={() => loadIssues()}
+        onOpenIssues={() => setActiveView('issues')}
+        onOpenSettings={openRuntimeSettings}
         onSelectProject={selectProject}
         onSelectIssue={selectIssue}
       />
-      <IssueDetail
-        issue={visibleIssueDetail}
-        projectTags={visibleProjectTags}
-        issueTags={visibleIssueTags}
-        comments={visibleComments}
-        mutationPending={mutationPending}
-        mutationError={mutationError}
-        onRetryIssue={() => loadIssueDetail()}
-        onRetryTags={() => {
-          void Promise.all([loadProjectTags(), loadIssueTags()])
-        }}
-        onRetryComments={() => loadComments()}
-        onUpdateIssue={updateIssue}
-        onCreateTag={createTag}
-        onAttachTag={attachTag}
-        onDetachTag={detachTag}
-        onCreateComment={createComment}
-        onUpdateComment={updateComment}
-        onDeleteComment={deleteComment}
-      />
-      <Timeline
-        activity={visibleActivity}
-        issueSelected={Boolean(visibleIssueDetail.data)}
-        onRetry={() => loadActivity()}
-      />
+      {activeView === 'settings' ? (
+        <RuntimeSettings
+          runtimes={runtimes}
+          discoverySummary={runtimeDiscoverySummary}
+          mutationPending={runtimeMutationPending}
+          mutationError={runtimeMutationError}
+          onRetry={loadRuntimes}
+          onDiscover={discoverRuntimes}
+          onUpdateRuntime={updateRuntime}
+          onValidateRuntime={validateRuntime}
+        />
+      ) : (
+        <>
+          <IssueDetail
+            issue={visibleIssueDetail}
+            projectTags={visibleProjectTags}
+            issueTags={visibleIssueTags}
+            comments={visibleComments}
+            mutationPending={mutationPending}
+            mutationError={mutationError}
+            onRetryIssue={() => loadIssueDetail()}
+            onRetryTags={() => {
+              void Promise.all([loadProjectTags(), loadIssueTags()])
+            }}
+            onRetryComments={() => loadComments()}
+            onUpdateIssue={updateIssue}
+            onCreateTag={createTag}
+            onAttachTag={attachTag}
+            onDetachTag={detachTag}
+            onCreateComment={createComment}
+            onUpdateComment={updateComment}
+            onDeleteComment={deleteComment}
+          />
+          <Timeline
+            activity={visibleActivity}
+            issueSelected={Boolean(visibleIssueDetail.data)}
+            onRetry={() => loadActivity()}
+          />
+        </>
+      )}
     </div>
   )
 }
