@@ -5,6 +5,7 @@ export type {
   Project,
   Issue,
   Agent,
+  Runtime,
   Tag,
   IssueComment,
   IssueActivity,

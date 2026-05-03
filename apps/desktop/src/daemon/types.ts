@@ -11,6 +11,13 @@ export interface Agent {
   name: string
   role: string
   status: string
+  runtime_id: string
+  runtime_name: string
+  runtime_status: string
+  model: string
+  instructions: string
+  assignable: boolean
+  assignable_reason: string
   created_at: string
   updated_at: string
 }
@@ -74,6 +81,8 @@ export interface RuntimeRecord {
   created_at: string
   updated_at: string
 }
+
+export type Runtime = RuntimeRecord
 
 export interface RuntimeListResponse {
   runtimes: RuntimeRecord[]
