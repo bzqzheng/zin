@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/bzqzheng/zin/services/daemon/httpapi/response"
 	"github.com/bzqzheng/zin/services/daemon/store"
@@ -98,11 +101,9 @@ func (h *AssignmentHandler) ListByIssue(w http.ResponseWriter, r *http.Request) 
 func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req cancelAssignmentRequest
-	if r.Body != nil && r.ContentLength != 0 {
-		if err := response.DecodeJSON(r, &req); err != nil {
-			response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
-			return
-		}
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
 	}
 	assignment, err := h.repo.Cancel(store.CancelIssueAssignmentInput{
 		AssignmentID: r.PathValue("id"),
@@ -113,6 +114,20 @@ func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, http.StatusOK, map[string]assignmentResponse{"assignment": assignmentToResponse(assignment)})
+}
+
+func decodeOptionalJSONBody(r *http.Request, dest any) error {
+	if r.Body == nil {
+		return nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return nil
+	}
+	return json.Unmarshal(body, dest)
 }
 
 func assignmentToResponse(assignment *store.IssueAssignment) assignmentResponse {

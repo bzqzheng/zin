@@ -221,11 +221,21 @@ func (r *IssueAssignmentRepository) Cancel(input CancelIssueAssignmentInput) (*I
 	}
 
 	now := time.Now().UTC()
-	if _, err := tx.Exec(
-		"UPDATE issue_assignments SET status = ?, cancelled_at = ?, updated_at = ? WHERE id = ?",
+	result, err := tx.Exec(
+		`UPDATE issue_assignments
+		 SET status = ?, cancelled_at = ?, updated_at = ?
+		 WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
 		"cancelled", now.Format(time.RFC3339), now.Format(time.RFC3339), input.AssignmentID,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, fmt.Errorf("cancel assignment: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("cancel assignment rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, ErrAssignmentTerminal
 	}
 	assignment, err = getAssignmentByIDTx(tx, input.AssignmentID)
 	if err != nil {

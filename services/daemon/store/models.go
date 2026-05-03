@@ -90,7 +90,7 @@ type IssueAssignment struct {
 	SourceType         string     `json:"source_type"`
 	SourceID           string     `json:"source_id"`
 	ClientRequestID    string     `json:"client_request_id"`
-	RequestFingerprint string     `json:"request_fingerprint"`
+	RequestFingerprint string     `json:"-"`
 	DedupeKey          string     `json:"dedupe_key"`
 	Status             string     `json:"status"`
 	RequestedAt        time.Time  `json:"requested_at"`

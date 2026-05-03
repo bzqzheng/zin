@@ -391,6 +391,7 @@ func TestAssignmentCreateReplayConflictAndCancel(t *testing.T) {
 		t.Fatalf("expected one durable assignment, got %#v", assignments)
 	}
 
+	assertStatus(t, router, http.MethodPost, "/api/assignments/missing/cancel", `{}`, http.StatusNotFound)
 	cancelled := requestJSON[struct {
 		Assignment map[string]interface{} `json:"assignment"`
 	}](t, router, http.MethodPost, "/api/assignments/"+assignmentID+"/cancel", `{"reason":"Changed direction"}`, http.StatusOK)
