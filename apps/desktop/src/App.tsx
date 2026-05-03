@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
-import IssueDetail, { type IssueUpdateInput } from './components/IssueDetail'
+import IssueDetail, { type AgentConfigInput, type IssueUpdateInput } from './components/IssueDetail'
 import Timeline from './components/Timeline'
 import { useDaemon } from './daemon'
-import type { Issue, IssueActivity, IssueComment, Project, Tag } from './daemon'
+import type { Agent, Issue, IssueActivity, IssueComment, Project, Runtime, Tag } from './daemon'
 
 export type LoadStatus = 'idle' | 'loading' | 'success' | 'error'
 
@@ -91,6 +91,30 @@ const emptyLoadedActivity: ResourceState<IssueActivity[]> = {
   error: null,
 }
 
+const emptyAgents: ResourceState<Agent[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedAgents: ResourceState<Agent[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
+const emptyRuntimes: ResourceState<Runtime[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedRuntimes: ResourceState<Runtime[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err)
 }
@@ -114,6 +138,8 @@ export default function App() {
   const [issueTags, setIssueTags] = useState<ResourceState<Tag[]>>(emptyIssueTags)
   const [comments, setComments] = useState<ResourceState<IssueComment[]>>(emptyComments)
   const [activity, setActivity] = useState<ResourceState<IssueActivity[]>>(emptyActivity)
+  const [agents, setAgents] = useState<ResourceState<Agent[]>>(emptyAgents)
+  const [runtimes, setRuntimes] = useState<ResourceState<Runtime[]>>(emptyRuntimes)
   const [preferredProjectId, setPreferredProjectId] = useState<string | null>(null)
   const [preferredIssueId, setPreferredIssueId] = useState<string | null>(null)
   const [mutationPending, setMutationPending] = useState(false)
@@ -193,6 +219,10 @@ export default function App() {
     [fetchApi],
   )
 
+  const fetchAgents = useCallback(() => fetchApi<Agent[]>('/api/agents'), [fetchApi])
+
+  const fetchRuntimes = useCallback(() => fetchApi<Runtime[]>('/api/runtimes'), [fetchApi])
+
   const resetIssueInteractions = useCallback((loaded = false) => {
     setIssueTags(loaded ? emptyLoadedIssueTags : emptyIssueTags)
     setComments(loaded ? emptyLoadedComments : emptyComments)
@@ -205,10 +235,40 @@ export default function App() {
     setIssueDetail(emptyIssueDetail)
     setProjectTags(emptyProjectTags)
     resetIssueInteractions()
+    setAgents(emptyAgents)
+    setRuntimes(emptyRuntimes)
     setPreferredProjectId(null)
     setPreferredIssueId(null)
     setMutationError(null)
   }, [resetIssueInteractions])
+
+  const loadAgents = useCallback(async () => {
+    if (!baseURL) {
+      setAgents(emptyLoadedAgents)
+      return
+    }
+    setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
+    try {
+      const data = await fetchAgents()
+      setAgents({ status: 'success', data, error: null })
+    } catch (err) {
+      setAgents({ status: 'error', data: [], error: errorMessage(err) })
+    }
+  }, [baseURL, fetchAgents])
+
+  const loadRuntimes = useCallback(async () => {
+    if (!baseURL) {
+      setRuntimes(emptyLoadedRuntimes)
+      return
+    }
+    setRuntimes((prev) => ({ ...prev, status: 'loading', error: null }))
+    try {
+      const data = await fetchRuntimes()
+      setRuntimes({ status: 'success', data, error: null })
+    } catch (err) {
+      setRuntimes({ status: 'error', data: [], error: errorMessage(err) })
+    }
+  }, [baseURL, fetchRuntimes])
 
   const startDaemonOnce = useCallback(() => {
     if (!daemonStartRef.current) {
@@ -462,10 +522,12 @@ export default function App() {
         if (sequence !== issueLoadSeqRef.current) return
         await loadIssues(selectedProjectId)
         if (sequence !== issueLoadSeqRef.current) return
+        await loadAgents()
+        if (sequence !== issueLoadSeqRef.current) return
         await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
-    [fetchApi, loadIssues, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+    [fetchApi, loadAgents, loadIssues, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
   )
 
   const createTag = useCallback(
@@ -547,6 +609,26 @@ export default function App() {
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
+  )
+
+  const createAgent = useCallback(
+    async (input: AgentConfigInput) => {
+      await runMutation(async () => {
+        await fetchApi<Agent>('/api/agents', jsonRequest('POST', input))
+        await loadAgents()
+      })
+    },
+    [fetchApi, loadAgents, runMutation],
+  )
+
+  const updateAgent = useCallback(
+    async (agentId: string, input: AgentConfigInput) => {
+      await runMutation(async () => {
+        await fetchApi<Agent>(`/api/agents/${agentId}`, jsonRequest('PUT', input))
+        await loadAgents()
+      })
+    },
+    [fetchApi, loadAgents, runMutation],
   )
 
   const selectProject = useCallback(
@@ -638,6 +720,38 @@ export default function App() {
       cancelled = true
     }
   }, [baseURL, fetchProjects, resetIssueInteractions])
+
+  useEffect(() => {
+    if (!baseURL) return
+
+    let cancelled = false
+
+    async function load() {
+      setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
+      setRuntimes((prev) => ({ ...prev, status: 'loading', error: null }))
+      const [agentResult, runtimeResult] = await Promise.allSettled([fetchAgents(), fetchRuntimes()])
+
+      if (cancelled) return
+
+      if (agentResult.status === 'fulfilled') {
+        setAgents({ status: 'success', data: agentResult.value ?? [], error: null })
+      } else {
+        setAgents({ status: 'error', data: [], error: errorMessage(agentResult.reason) })
+      }
+
+      if (runtimeResult.status === 'fulfilled') {
+        setRuntimes({ status: 'success', data: runtimeResult.value ?? [], error: null })
+      } else {
+        setRuntimes({ status: 'error', data: [], error: errorMessage(runtimeResult.reason) })
+      }
+    }
+
+    void load()
+
+    return () => {
+      cancelled = true
+    }
+  }, [baseURL, fetchAgents, fetchRuntimes])
 
   useEffect(() => {
     if (!baseURL || projects.status !== 'success') return
@@ -774,6 +888,8 @@ export default function App() {
         projectTags={visibleProjectTags}
         issueTags={visibleIssueTags}
         comments={visibleComments}
+        agents={agents}
+        runtimes={runtimes}
         mutationPending={mutationPending}
         mutationError={mutationError}
         onRetryIssue={() => loadIssueDetail()}
@@ -781,6 +897,9 @@ export default function App() {
           void Promise.all([loadProjectTags(), loadIssueTags()])
         }}
         onRetryComments={() => loadComments()}
+        onRetryAgents={() => {
+          void Promise.all([loadAgents(), loadRuntimes()])
+        }}
         onUpdateIssue={updateIssue}
         onCreateTag={createTag}
         onAttachTag={attachTag}
@@ -788,6 +907,8 @@ export default function App() {
         onCreateComment={createComment}
         onUpdateComment={updateComment}
         onDeleteComment={deleteComment}
+        onCreateAgent={createAgent}
+        onUpdateAgent={updateAgent}
       />
       <Timeline
         activity={visibleActivity}

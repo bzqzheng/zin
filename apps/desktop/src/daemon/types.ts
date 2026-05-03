@@ -11,6 +11,27 @@ export interface Agent {
   name: string
   role: string
   status: string
+  runtime_id: string
+  runtime_name: string
+  runtime_status: string
+  model: string
+  instructions: string
+  assignable: boolean
+  assignable_reason: string
+  created_at: string
+  updated_at: string
+}
+
+export interface Runtime {
+  id: string
+  name: string
+  kind: string
+  command: string
+  path: string
+  version: string
+  status: string
+  status_message: string
+  last_checked_at: string
   created_at: string
   updated_at: string
 }

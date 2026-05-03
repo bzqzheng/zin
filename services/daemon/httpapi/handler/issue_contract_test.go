@@ -33,12 +33,14 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	commentRepo := store.NewIssueCommentRepository(database)
 	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
+	runtimeRepo := store.NewRuntimeRepository(database)
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
 		handler.NewIssueHandler(database, issueRepo, projectRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
-		handler.NewAgentHandler(agentRepo),
+		handler.NewAgentHandler(agentRepo, runtimeRepo),
+		handler.NewRuntimeHandler(runtimeRepo),
 		make(chan struct{}, 1),
 	)
 
@@ -231,6 +233,36 @@ func TestErrorEnvelopeAlwaysIncludesDetails(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	healthy := requestJSON[store.Runtime](t, router, http.MethodPost, "/api/runtimes", `{"name":"Codex","kind":"codex","command":"codex","status":"healthy"}`, http.StatusCreated)
+	degraded := requestJSON[store.Runtime](t, router, http.MethodPost, "/api/runtimes", `{"name":"Claude","kind":"claude","command":"claude","status":"degraded","status_message":"auth expired"}`, http.StatusCreated)
+
+	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+healthy.ID+`","model":"gpt-5","instructions":"Complete the work."}`, http.StatusCreated)
+	if !assignable.Assignable || assignable.RuntimeStatus != "healthy" || assignable.Model != "gpt-5" {
+		t.Fatalf("expected healthy runtime agent to be assignable, got %#v", assignable)
+	}
+
+	blocked := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Smith","role":"reviewer","runtime_id":"`+degraded.ID+`"}`, http.StatusCreated)
+	if blocked.Assignable || !strings.Contains(blocked.AssignableReason, "degraded") {
+		t.Fatalf("expected degraded runtime agent to be gated with explicit reason, got %#v", blocked)
+	}
+
+	filtered := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
+	if len(filtered) != 1 || filtered[0].ID != assignable.ID {
+		t.Fatalf("expected assignable filter to return only healthy runtime agent, got %#v", filtered)
+	}
+
+	updated := requestJSON[store.Agent](t, router, http.MethodPut, "/api/agents/"+blocked.ID, `{"runtime_id":"`+healthy.ID+`","model":"claude-sonnet","instructions":"Review carefully."}`, http.StatusOK)
+	if !updated.Assignable || updated.Model != "claude-sonnet" || updated.Instructions != "Review carefully." {
+		t.Fatalf("expected update to bind healthy runtime and persist config, got %#v", updated)
+	}
+
+	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Missing","runtime_id":"missing"}`, http.StatusBadRequest)
 }
 
 func TestInteractionEndpointContracts(t *testing.T) {
