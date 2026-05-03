@@ -47,7 +47,6 @@ export function useApi() {
 
     agents: {
       list: () => fetchApi<Agent[]>('/api/agents'),
-      listAssignable: () => fetchApi<Agent[]>('/api/agents?assignable=true'),
       get: (id: string) => fetchApi<Agent>(`/api/agents/${id}`),
       create: (data: { name: string; role?: string; runtime_id?: string; model?: string; instructions?: string }) =>
         fetchApi<Agent>('/api/agents', {

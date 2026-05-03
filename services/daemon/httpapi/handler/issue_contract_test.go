@@ -39,7 +39,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
-		handler.NewIssueHandler(database, issueRepo, projectRepo),
+		handler.NewIssueHandler(database, issueRepo, projectRepo, agentRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
 		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
@@ -238,7 +238,7 @@ func TestErrorEnvelopeAlwaysIncludesDetails(t *testing.T) {
 }
 
 func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
-	router, _, _, cleanup := setupRouter(t)
+	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()
 	t.Setenv("PATH", t.TempDir())
 
@@ -274,6 +274,20 @@ func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
 	filtered := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
 	if len(filtered) != 1 || filtered[0].ID != assignable.ID {
 		t.Fatalf("expected assignable filter to return only healthy runtime agent, got %#v", filtered)
+	}
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Gate server-side assignment"})
+	blockedAssignment := requestJSON[map[string]map[string]string](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+blocked.ID+`"}`, http.StatusBadRequest)
+	if blockedAssignment["error"]["code"] != "ASSIGNEE_NOT_ASSIGNABLE" || !strings.Contains(blockedAssignment["error"]["details"], "degraded") {
+		t.Fatalf("expected explicit assignability error, got %#v", blockedAssignment)
+	}
+	assigned := requestJSON[store.Issue](t, router, http.MethodPut, "/api/issues/"+issue.ID, `{"assignee_id":"`+assignable.ID+`"}`, http.StatusOK)
+	if assigned.AssigneeID != assignable.ID {
+		t.Fatalf("expected assignable agent to be accepted, got %#v", assigned)
 	}
 
 	updated := requestJSON[store.Agent](t, router, http.MethodPut, "/api/agents/"+blocked.ID, `{"runtime_id":"`+healthy.ID+`","model":"claude-sonnet","instructions":"Review carefully."}`, http.StatusOK)
