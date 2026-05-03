@@ -105,6 +105,7 @@ function jsonRequest(method: string, body?: unknown): RequestInit {
 export default function App() {
   const { baseURL, error: daemonError, fetchApi, startDaemon } = useDaemon()
   const daemonStartRef = useRef<Promise<unknown> | null>(null)
+  const issueLoadSeqRef = useRef(0)
   const [daemonStatus, setDaemonStatus] = useState<LoadStatus>('loading')
   const [projects, setProjects] = useState<ResourceState<Project[]>>(emptyProjects)
   const [issues, setIssues] = useState<ResourceState<Issue[]>>(emptyIssues)
@@ -297,90 +298,128 @@ export default function App() {
   )
 
   const loadIssueDetail = useCallback(
-    async (issueId: string | null = selectedIssueId) => {
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
       if (!baseURL || !issueId) {
-        setIssueDetail(emptyLoadedIssueDetail)
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail(emptyLoadedIssueDetail)
+        }
         return
       }
 
-      setIssueDetail((prev) => ({ ...prev, status: 'loading', error: null }))
+      if (sequence === issueLoadSeqRef.current) {
+        setIssueDetail((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
       try {
         const data = await fetchIssueDetail(issueId)
-        setIssueDetail({ status: 'success', data, error: null })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail({ status: 'success', data, error: null })
+        }
       } catch (err) {
-        setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
+        }
       }
     },
     [baseURL, fetchIssueDetail, selectedIssueId],
   )
 
   const loadIssueTags = useCallback(
-    async (issueId: string | null = selectedIssueId) => {
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
       if (!baseURL || !issueId) {
-        setIssueTags(emptyLoadedIssueTags)
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueTags(emptyLoadedIssueTags)
+        }
         return
       }
 
-      setIssueTags((prev) => ({ ...prev, status: 'loading', error: null }))
+      if (sequence === issueLoadSeqRef.current) {
+        setIssueTags((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
       try {
         const data = await fetchIssueTags(issueId)
-        setIssueTags({ status: 'success', data, error: null })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueTags({ status: 'success', data, error: null })
+        }
       } catch (err) {
-        setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+        }
       }
     },
     [baseURL, fetchIssueTags, selectedIssueId],
   )
 
   const loadComments = useCallback(
-    async (issueId: string | null = selectedIssueId) => {
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
       if (!baseURL || !issueId) {
-        setComments(emptyLoadedComments)
+        if (sequence === issueLoadSeqRef.current) {
+          setComments(emptyLoadedComments)
+        }
         return
       }
 
-      setComments((prev) => ({ ...prev, status: 'loading', error: null }))
+      if (sequence === issueLoadSeqRef.current) {
+        setComments((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
       try {
         const data = await fetchComments(issueId)
-        setComments({ status: 'success', data, error: null })
+        if (sequence === issueLoadSeqRef.current) {
+          setComments({ status: 'success', data, error: null })
+        }
       } catch (err) {
-        setComments({ status: 'error', data: [], error: errorMessage(err) })
+        if (sequence === issueLoadSeqRef.current) {
+          setComments({ status: 'error', data: [], error: errorMessage(err) })
+        }
       }
     },
     [baseURL, fetchComments, selectedIssueId],
   )
 
   const loadActivity = useCallback(
-    async (issueId: string | null = selectedIssueId) => {
+    async (issueId: string | null = selectedIssueId, sequence = issueLoadSeqRef.current) => {
       if (!baseURL || !issueId) {
-        setActivity(emptyLoadedActivity)
+        if (sequence === issueLoadSeqRef.current) {
+          setActivity(emptyLoadedActivity)
+        }
         return
       }
 
-      setActivity((prev) => ({ ...prev, status: 'loading', error: null }))
+      if (sequence === issueLoadSeqRef.current) {
+        setActivity((prev) => ({ ...prev, status: 'loading', error: null }))
+      }
       try {
         const data = await fetchActivity(issueId)
-        setActivity({ status: 'success', data, error: null })
+        if (sequence === issueLoadSeqRef.current) {
+          setActivity({ status: 'success', data, error: null })
+        }
       } catch (err) {
-        setActivity({ status: 'error', data: [], error: errorMessage(err) })
+        if (sequence === issueLoadSeqRef.current) {
+          setActivity({ status: 'error', data: [], error: errorMessage(err) })
+        }
       }
     },
     [baseURL, fetchActivity, selectedIssueId],
   )
 
   const reloadIssueContext = useCallback(
-    async (issueId: string | null = selectedIssueId, projectId: string | null = selectedProjectId) => {
+    async (
+      issueId: string | null = selectedIssueId,
+      projectId: string | null = selectedProjectId,
+      sequence = issueLoadSeqRef.current,
+    ) => {
       if (!issueId) {
-        setIssueDetail(emptyLoadedIssueDetail)
-        resetIssueInteractions(true)
+        if (sequence === issueLoadSeqRef.current) {
+          setIssueDetail(emptyLoadedIssueDetail)
+          resetIssueInteractions(true)
+        }
         return
       }
 
       await Promise.all([
-        loadIssueDetail(issueId),
-        loadIssueTags(issueId),
-        loadComments(issueId),
-        loadActivity(issueId),
+        loadIssueDetail(issueId, sequence),
+        loadIssueTags(issueId, sequence),
+        loadComments(issueId, sequence),
+        loadActivity(issueId, sequence),
         projectId ? loadProjectTags(projectId) : Promise.resolve(),
       ])
     },
@@ -396,16 +435,21 @@ export default function App() {
     ],
   )
 
-  const runMutation = useCallback(async (operation: () => Promise<void>) => {
+  const runMutation = useCallback(async (operation: (sequence: number) => Promise<void>) => {
+    const sequence = issueLoadSeqRef.current
     setMutationPending(true)
     setMutationError(null)
     try {
-      await operation()
+      await operation(sequence)
     } catch (err) {
-      setMutationError(errorMessage(err))
+      if (sequence === issueLoadSeqRef.current) {
+        setMutationError(errorMessage(err))
+      }
       throw err
     } finally {
-      setMutationPending(false)
+      if (sequence === issueLoadSeqRef.current) {
+        setMutationPending(false)
+      }
     }
   }, [])
 
@@ -413,9 +457,13 @@ export default function App() {
     async (input: IssueUpdateInput) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<Issue>(`/api/issues/${selectedIssueId}`, jsonRequest('PUT', input))
-        await Promise.all([loadIssues(selectedProjectId), reloadIssueContext(selectedIssueId, selectedProjectId)])
+        if (sequence !== issueLoadSeqRef.current) return
+        await Promise.all([
+          loadIssues(selectedProjectId),
+          reloadIssueContext(selectedIssueId, selectedProjectId, sequence),
+        ])
       })
     },
     [fetchApi, loadIssues, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -425,9 +473,10 @@ export default function App() {
     async (name: string, color: string) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<Tag[]>(`/api/issues/${selectedIssueId}/tags`, jsonRequest('POST', { name, color }))
-        await reloadIssueContext(selectedIssueId, selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -437,9 +486,10 @@ export default function App() {
     async (tagId: string) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<Tag[]>(`/api/issues/${selectedIssueId}/tags`, jsonRequest('POST', { tag_id: tagId }))
-        await reloadIssueContext(selectedIssueId, selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -449,9 +499,10 @@ export default function App() {
     async (tagId: string) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<void>(`/api/issues/${selectedIssueId}/tags/${tagId}`, jsonRequest('DELETE'))
-        await reloadIssueContext(selectedIssueId, selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -461,12 +512,13 @@ export default function App() {
     async (body: string) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<IssueComment>(
           `/api/issues/${selectedIssueId}/comments`,
           jsonRequest('POST', { body, author_id: 'local-user' }),
         )
-        await reloadIssueContext(selectedIssueId, selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -476,9 +528,10 @@ export default function App() {
     async (commentId: string, body: string) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<IssueComment>(`/api/comments/${commentId}`, jsonRequest('PUT', { body }))
-        await reloadIssueContext(selectedIssueId, selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -488,9 +541,10 @@ export default function App() {
     async (commentId: string) => {
       if (!selectedIssueId || !selectedProjectId) return
 
-      await runMutation(async () => {
+      await runMutation(async (sequence) => {
         await fetchApi<void>(`/api/comments/${commentId}`, jsonRequest('DELETE'))
-        await reloadIssueContext(selectedIssueId, selectedProjectId)
+        if (sequence !== issueLoadSeqRef.current) return
+        await reloadIssueContext(selectedIssueId, selectedProjectId, sequence)
       })
     },
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
@@ -500,23 +554,27 @@ export default function App() {
     (projectId: string) => {
       if (projectId === selectedProjectId) return
 
+      issueLoadSeqRef.current += 1
       setPreferredProjectId(projectId)
       setPreferredIssueId(null)
       setIssues({ status: 'loading', data: [], error: null })
       setIssueDetail({ status: 'loading', data: null, error: null })
       setProjectTags({ status: 'loading', data: [], error: null })
       resetIssueInteractions()
+      setMutationPending(false)
       setMutationError(null)
     },
     [resetIssueInteractions, selectedProjectId],
   )
 
   const selectIssue = useCallback((issueId: string) => {
+    issueLoadSeqRef.current += 1
     setPreferredIssueId(issueId)
     setIssueDetail({ status: 'loading', data: null, error: null })
     setIssueTags({ status: 'loading', data: [], error: null })
     setComments({ status: 'loading', data: [], error: null })
     setActivity({ status: 'loading', data: [], error: null })
+    setMutationPending(false)
     setMutationError(null)
   }, [])
 
@@ -636,15 +694,16 @@ export default function App() {
 
     let cancelled = false
     const issueId = selectedIssueId
+    const sequence = issueLoadSeqRef.current
 
     async function load() {
       try {
         const issueData = await fetchIssueDetail(issueId)
-        if (!cancelled) {
+        if (!cancelled && sequence === issueLoadSeqRef.current) {
           setIssueDetail({ status: 'success', data: issueData, error: null })
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && sequence === issueLoadSeqRef.current) {
           setIssueDetail({ status: 'error', data: null, error: errorMessage(err) })
         }
       }
@@ -653,26 +712,38 @@ export default function App() {
         Promise.resolve()
           .then(() => fetchIssueTags(issueId))
           .then((data) => {
-            if (!cancelled) setIssueTags({ status: 'success', data: data ?? [], error: null })
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setIssueTags({ status: 'success', data: data ?? [], error: null })
+            }
           })
           .catch((err) => {
-            if (!cancelled) setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setIssueTags({ status: 'error', data: [], error: errorMessage(err) })
+            }
           }),
         Promise.resolve()
           .then(() => fetchComments(issueId))
           .then((data) => {
-            if (!cancelled) setComments({ status: 'success', data: data ?? [], error: null })
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setComments({ status: 'success', data: data ?? [], error: null })
+            }
           })
           .catch((err) => {
-            if (!cancelled) setComments({ status: 'error', data: [], error: errorMessage(err) })
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setComments({ status: 'error', data: [], error: errorMessage(err) })
+            }
           }),
         Promise.resolve()
           .then(() => fetchActivity(issueId))
           .then((data) => {
-            if (!cancelled) setActivity({ status: 'success', data: data ?? [], error: null })
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setActivity({ status: 'success', data: data ?? [], error: null })
+            }
           })
           .catch((err) => {
-            if (!cancelled) setActivity({ status: 'error', data: [], error: errorMessage(err) })
+            if (!cancelled && sequence === issueLoadSeqRef.current) {
+              setActivity({ status: 'error', data: [], error: errorMessage(err) })
+            }
           }),
       ])
     }

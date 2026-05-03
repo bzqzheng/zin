@@ -74,6 +74,16 @@ function interactionResponse(path: string) {
   return undefined
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
+}
+
 function renderApp(
   fetchApi: DaemonConnectionContext['fetchApi'],
   overrides: Partial<DaemonConnectionContext> = {},
@@ -152,7 +162,7 @@ describe('App', () => {
 
     const detail = await screen.findByRole('heading', { name: 'Alpha issue' })
     expect(detail).toBeVisible()
-    expect(screen.getByText('Persisted issue description')).toBeVisible()
+    expect(await screen.findByDisplayValue('Persisted issue description')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Beta' }))
 
@@ -273,6 +283,52 @@ describe('App', () => {
         }),
       )
     })
+  })
+
+  it('ignores stale mutation reloads after selecting another issue', async () => {
+    let alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    const betaIssue = makeIssue({
+      id: 'issue-beta',
+      identifier: 'ISSUE-2',
+      title: 'Beta issue',
+      status: 'in_progress',
+    })
+    const update = deferred<Issue>()
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue, betaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') {
+        if (init?.method === 'PUT') return update.promise
+        return Promise.resolve(alphaIssue)
+      }
+      if (path === '/api/issues/issue-beta') return Promise.resolve(betaIssue)
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Alpha updated' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Fields' }))
+    fireEvent.click(screen.getByRole('button', { name: /ISSUE-2.*Beta issue/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Beta issue' })).toBeVisible()
+
+    alphaIssue = { ...alphaIssue, title: 'Alpha updated', updated_at: '2026-05-02T16:00:00Z' }
+    update.resolve(alphaIssue)
+
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/issues/issue-alpha',
+        expect.objectContaining({ method: 'PUT' }),
+      )
+    })
+    expect(screen.getByRole('heading', { name: 'Beta issue' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Alpha updated' })).not.toBeInTheDocument()
   })
 
   it('creates, attaches, and detaches tags with server reloads', async () => {

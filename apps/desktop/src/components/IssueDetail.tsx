@@ -161,7 +161,14 @@ function CommentItem({
           >
             Edit
           </button>
-          <button type="button" disabled={disabled} onClick={() => onDelete(comment.id)} className="text-xs text-red-300 hover:text-red-100">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              void onDelete(comment.id).catch(() => undefined)
+            }}
+            className="text-xs text-red-300 hover:text-red-100"
+          >
             Delete
           </button>
         </div>
