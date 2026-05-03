@@ -63,9 +63,24 @@ function RuntimeCard({
   onUpdateRuntime: RuntimeSettingsProps['onUpdateRuntime']
   onValidateRuntime: RuntimeSettingsProps['onValidateRuntime']
 }) {
-  const [displayName, setDisplayName] = useState(runtime.display_name)
-  const [binaryPath, setBinaryPath] = useState(runtime.binary_path)
+  const [draft, setDraft] = useState({
+    sourceDisplayName: runtime.display_name,
+    sourceBinaryPath: runtime.binary_path,
+    displayName: runtime.display_name,
+    binaryPath: runtime.binary_path,
+  })
 
+  if (draft.sourceDisplayName !== runtime.display_name || draft.sourceBinaryPath !== runtime.binary_path) {
+    setDraft({
+      sourceDisplayName: runtime.display_name,
+      sourceBinaryPath: runtime.binary_path,
+      displayName: runtime.display_name,
+      binaryPath: runtime.binary_path,
+    })
+  }
+
+  const displayName = draft.displayName
+  const binaryPath = draft.binaryPath
   const hasDraftChanges = displayName !== runtime.display_name || binaryPath !== runtime.binary_path
 
   return (
@@ -85,7 +100,7 @@ function RuntimeCard({
           <span className="mb-1 block text-xs font-medium text-zinc-500">Display name</span>
           <input
             value={displayName}
-            onChange={(event) => setDisplayName(event.target.value)}
+            onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))}
             className={inputStyle}
           />
         </label>
@@ -93,7 +108,7 @@ function RuntimeCard({
           <span className="mb-1 block text-xs font-medium text-zinc-500">Binary path</span>
           <input
             value={binaryPath}
-            onChange={(event) => setBinaryPath(event.target.value)}
+            onChange={(event) => setDraft((current) => ({ ...current, binaryPath: event.target.value }))}
             placeholder="Missing from PATH"
             className={inputStyle}
           />
@@ -210,7 +225,7 @@ export default function RuntimeSettings({
           <div className="grid gap-3">
             {sortedRuntimes.map((runtime) => (
               <RuntimeCard
-                key={`${runtime.id}:${runtime.updated_at}:${runtime.display_name}:${runtime.binary_path}`}
+                key={runtime.id}
                 runtime={runtime}
                 disabled={mutationPending}
                 onUpdateRuntime={onUpdateRuntime}

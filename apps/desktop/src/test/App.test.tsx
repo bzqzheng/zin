@@ -533,6 +533,7 @@ describe('App', () => {
             health_status: 'healthy',
             health_reason: '',
             last_checked_at: '2026-05-03T20:05:00Z',
+            updated_at: '2026-05-03T20:05:00Z',
           },
         })
       }
@@ -559,6 +560,11 @@ describe('App', () => {
     expect(screen.getByText('Healthy')).toBeVisible()
     expect(screen.getByText('Probe passed')).toBeVisible()
 
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Unsaved Codex' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revalidate' }))
+    expect(await screen.findByDisplayValue('Unsaved Codex')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Codex CLI' } })
     fireEvent.change(screen.getByLabelText('Binary path'), { target: { value: '/opt/homebrew/bin/codex' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save Path' }))
 
