@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,12 +35,16 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 	commentRepo := store.NewIssueCommentRepository(database)
 	activityRepo := store.NewIssueActivityRepository(database)
 	agentRepo := store.NewAgentRepository(database)
+	runtimeRepo := store.NewRuntimeRepository(database)
+	assignmentRepo := store.NewIssueAssignmentRepository(database)
 	router := httpapi.NewRouter(
 		handler.NewHealthHandler(database, &config.DaemonConfig{}, 0),
 		handler.NewProjectHandler(projectRepo),
 		handler.NewIssueHandler(database, issueRepo, projectRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
-		handler.NewAgentHandler(agentRepo),
+		handler.NewAgentHandler(agentRepo, runtimeRepo),
+		handler.NewRuntimeHandler(runtimeRepo),
+		handler.NewAssignmentHandler(assignmentRepo),
 		make(chan struct{}, 1),
 	)
 
@@ -233,6 +239,212 @@ func TestErrorEnvelopeAlwaysIncludesDetails(t *testing.T) {
 	}
 }
 
+func TestRuntimeDiscoveryContracts(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	body := `{"path_overrides":{"codex":` + mustJSONQuote(t, codex) + `}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/runtimes/discover", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+		Summary  struct {
+			Healthy  int `json:"healthy"`
+			Degraded int `json:"degraded"`
+			Missing  int `json:"missing"`
+		} `json:"summary"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode discover response: %v", err)
+	}
+	if len(payload.Runtimes) != 4 {
+		t.Fatalf("expected four supported runtimes, got %#v", payload.Runtimes)
+	}
+	if payload.Summary.Healthy != 1 || payload.Summary.Missing != 3 {
+		t.Fatalf("unexpected discovery summary: %#v", payload.Summary)
+	}
+
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodGet, "/api/runtimes", ``, http.StatusOK)
+	if len(runtimes.Runtimes) != 4 {
+		t.Fatalf("expected persisted runtime list, got %#v", runtimes)
+	}
+}
+
+func TestRuntimeDiscoveryRejectsInvalidOverrideWithEnvelope(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/runtimes/discover", bytes.NewBufferString(`{"path_overrides":{"unknown":"/bin/echo"}}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if payload["error"]["code"] != "INVALID_RUNTIME_KIND" || payload["error"]["details"] == "" {
+		t.Fatalf("unexpected error envelope: %#v", payload)
+	}
+}
+
+func TestRuntimeValidatePersistsStatus(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+
+	var codexRuntime store.Runtime
+	for _, runtime := range discovered.Runtimes {
+		if runtime.Kind == "codex" {
+			codexRuntime = runtime
+		}
+	}
+	if codexRuntime.ID == "" {
+		t.Fatalf("expected codex runtime in discovery response: %#v", discovered)
+	}
+
+	degraded := writeHandlerExecutable(t, "codex", "#!/bin/sh\nexit 9\n")
+	updated := requestJSON[struct {
+		Runtime store.Runtime `json:"runtime"`
+	}](t, router, http.MethodPut, "/api/runtimes/"+codexRuntime.ID, `{"binary_path":`+mustJSONQuote(t, degraded)+`}`, http.StatusOK)
+	if updated.Runtime.HealthStatus != "degraded" || updated.Runtime.HealthReason != "probe_failed" {
+		t.Fatalf("expected degraded update, got %#v", updated.Runtime)
+	}
+
+	validated := requestJSON[struct {
+		Runtime store.Runtime `json:"runtime"`
+	}](t, router, http.MethodPost, "/api/runtimes/validate", `{"runtime_id":"`+codexRuntime.ID+`"}`, http.StatusOK)
+	if validated.Runtime.HealthStatus != "degraded" || validated.Runtime.HealthReason != "probe_failed" {
+		t.Fatalf("expected degraded validation to persist, got %#v", validated.Runtime)
+	}
+}
+
+func TestAssignmentCreateReplayConflictAndCancel(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Assignable work"})
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtimeID := runtimeIDByKind(t, discovered.Runtimes, "codex")
+
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Builder","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusCreated)
+	otherAgent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Reviewer","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusCreated)
+
+	assignableAgents := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
+	if len(assignableAgents) != 2 {
+		t.Fatalf("expected assignable filtered agent list, got %#v", assignableAgents)
+	}
+
+	first := requestJSON[struct {
+		Assignment       map[string]interface{} `json:"assignment"`
+		IdempotentReplay bool                   `json:"idempotent_replay"`
+	}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"req-1"}`, http.StatusCreated)
+	if first.IdempotentReplay {
+		t.Fatalf("first create should not be replay: %#v", first)
+	}
+	assignmentID, _ := first.Assignment["id"].(string)
+	if assignmentID == "" || first.Assignment["status"] != "queued" {
+		t.Fatalf("unexpected assignment response: %#v", first.Assignment)
+	}
+	if _, leaked := first.Assignment["request_fingerprint"]; leaked {
+		t.Fatalf("assignment response must not expose request_fingerprint: %#v", first.Assignment)
+	}
+
+	replay := requestJSON[struct {
+		Assignment       map[string]interface{} `json:"assignment"`
+		IdempotentReplay bool                   `json:"idempotent_replay"`
+	}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"req-1"}`, http.StatusOK)
+	if !replay.IdempotentReplay || replay.Assignment["id"] != assignmentID {
+		t.Fatalf("expected exact replay of assignment %s, got %#v", assignmentID, replay)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+otherAgent.ID+`","source_type":"issue_detail","client_request_id":"req-1"}`, http.StatusConflict)
+
+	assignments := requestJSON[struct {
+		Assignments []map[string]interface{} `json:"assignments"`
+	}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/assignments", ``, http.StatusOK)
+	if len(assignments.Assignments) != 1 || assignments.Assignments[0]["id"] != assignmentID {
+		t.Fatalf("expected one durable assignment, got %#v", assignments)
+	}
+
+	assertStatus(t, router, http.MethodPost, "/api/assignments/missing/cancel", `{}`, http.StatusNotFound)
+	cancelled := requestJSON[struct {
+		Assignment map[string]interface{} `json:"assignment"`
+	}](t, router, http.MethodPost, "/api/assignments/"+assignmentID+"/cancel", `{"reason":"Changed direction"}`, http.StatusOK)
+	if cancelled.Assignment["status"] != "cancelled" {
+		t.Fatalf("expected cancelled assignment, got %#v", cancelled)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/assignments/"+assignmentID+"/cancel", `{}`, http.StatusConflict)
+
+	events := requestJSON[[]map[string]interface{}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/activity", ``, http.StatusOK)
+	var requestedEvents, cancelledEvents int
+	for _, event := range events {
+		switch event["type"] {
+		case "assignment.requested":
+			requestedEvents++
+		case "assignment.cancelled":
+			cancelledEvents++
+		}
+	}
+	if requestedEvents != 1 || cancelledEvents != 1 {
+		t.Fatalf("expected one requested and one cancelled activity, got requested=%d cancelled=%d events=%#v", requestedEvents, cancelledEvents, events)
+	}
+}
+
+func TestAssignmentGateFailures(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignment gates", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Gate work"})
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtimeID := runtimeIDByKind(t, discovered.Runtimes, "codex")
+
+	unassignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Dormant","runtime_id":"`+runtimeID+`","is_assignable":false}`, http.StatusCreated)
+	assertStatus(t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+unassignable.ID+`","source_type":"issue_detail","client_request_id":"req-gate-1"}`, http.StatusUnprocessableEntity)
+
+	degraded := writeHandlerExecutable(t, "codex", "#!/bin/sh\nexit 9\n")
+	runtime := requestJSON[struct {
+		Runtime store.Runtime `json:"runtime"`
+	}](t, router, http.MethodPut, "/api/runtimes/"+runtimeID, `{"binary_path":`+mustJSONQuote(t, degraded)+`}`, http.StatusOK)
+	if runtime.Runtime.HealthStatus != "degraded" {
+		t.Fatalf("expected degraded runtime, got %#v", runtime.Runtime)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Bad","runtime_id":"`+runtimeID+`","is_assignable":true}`, http.StatusUnprocessableEntity)
+}
+
 func TestInteractionEndpointContracts(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()
@@ -321,6 +533,20 @@ func TestInteractionEndpointContracts(t *testing.T) {
 	}
 }
 
+func runtimeIDByKind(t *testing.T, runtimes []store.Runtime, kind string) string {
+	t.Helper()
+	for _, runtime := range runtimes {
+		if runtime.Kind == kind {
+			if runtime.ID == "" {
+				t.Fatalf("runtime %s has empty id: %#v", kind, runtime)
+			}
+			return runtime.ID
+		}
+	}
+	t.Fatalf("runtime %s not found in %#v", kind, runtimes)
+	return ""
+}
+
 func TestInteractionNotFoundAndValidationPaths(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()
@@ -391,4 +617,22 @@ func assertStatus(t *testing.T, router http.Handler, method, path, body string, 
 	if rec.Code != want {
 		t.Fatalf("%s %s: expected %d, got %d: %s", method, path, want, rec.Code, rec.Body.String())
 	}
+}
+
+func writeHandlerExecutable(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		t.Fatalf("write executable: %v", err)
+	}
+	return path
+}
+
+func mustJSONQuote(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("quote value: %v", err)
+	}
+	return string(encoded)
 }
