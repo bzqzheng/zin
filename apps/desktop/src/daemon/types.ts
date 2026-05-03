@@ -58,3 +58,38 @@ export interface IssueActivity {
   metadata: Record<string, unknown>
   created_at: string
 }
+
+export type RuntimeKind = 'codex' | 'claude' | 'gemini' | 'opencode'
+export type RuntimeHealthStatus = 'healthy' | 'degraded' | 'missing'
+
+export interface RuntimeRecord {
+  id: string
+  kind: RuntimeKind
+  display_name: string
+  binary_path: string
+  version_raw: string
+  health_status: RuntimeHealthStatus
+  health_reason: string
+  last_checked_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface RuntimeListResponse {
+  runtimes: RuntimeRecord[]
+}
+
+export interface RuntimeDiscoverySummary {
+  healthy: number
+  degraded: number
+  missing: number
+}
+
+export interface RuntimeDiscoveryResponse {
+  runtimes: RuntimeRecord[]
+  summary: RuntimeDiscoverySummary
+}
+
+export interface RuntimeMutationResponse {
+  runtime: Partial<RuntimeRecord> & { id: string }
+}
