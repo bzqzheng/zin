@@ -374,9 +374,9 @@ export default function IssueDetail({
 
   useEffect(() => {
     if (agents.status !== 'success') return
-    if (selectedConfigAgentId && agents.data.some((agent) => agent.id === selectedConfigAgentId)) return
+    if (!selectedConfigAgentId || agents.data.some((agent) => agent.id === selectedConfigAgentId)) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSelectedConfigAgentId(agents.data[0]?.id ?? '')
+    setSelectedConfigAgentId('')
   }, [agents.data, agents.status, selectedConfigAgentId])
 
   useEffect(() => {

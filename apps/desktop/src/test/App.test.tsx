@@ -681,10 +681,12 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Assign Agent' })).toBeDisabled()
 
-    fireEvent.change(screen.getByLabelText('Agent'), { target: { value: '' } })
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Runtime Bound' } })
-    fireEvent.change(screen.getByLabelText('Runtime'), { target: { value: codexRuntime.id } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create Agent' }))
+    const agentsSection = screen.getByRole('heading', { name: 'Agents' }).closest('section')
+    if (!agentsSection) throw new Error('agents section missing')
+    fireEvent.change(within(agentsSection).getByLabelText('Agent'), { target: { value: '' } })
+    fireEvent.change(within(agentsSection).getByLabelText('Name'), { target: { value: 'Runtime Bound' } })
+    fireEvent.change(within(agentsSection).getByLabelText('Runtime'), { target: { value: codexRuntime.id } })
+    fireEvent.click(within(agentsSection).getByRole('button', { name: 'Create Agent' }))
 
     await waitFor(() => {
       expect(fetchApi).toHaveBeenCalledWith(
