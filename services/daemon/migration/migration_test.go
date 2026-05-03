@@ -22,19 +22,27 @@ func TestRun(t *testing.T) {
 	}
 
 	var tableCount int
-	if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','agents','issues')").Scan(&tableCount); err != nil {
+	if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','agents','issues','tags','issue_tags','issue_comments','issue_activity')").Scan(&tableCount); err != nil {
 		t.Fatalf("verify tables: %v", err)
 	}
-	if tableCount != 3 {
-		t.Errorf("expected 3 tables, got %d", tableCount)
+	if tableCount != 7 {
+		t.Errorf("expected 7 tables, got %d", tableCount)
 	}
 
-	var positionIndexCount int
-	if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = 'idx_issues_project_position'").Scan(&positionIndexCount); err != nil {
-		t.Fatalf("verify position index: %v", err)
-	}
-	if positionIndexCount != 1 {
-		t.Errorf("expected issue position index, got %d", positionIndexCount)
+	for _, indexName := range []string{
+		"idx_issues_project_position",
+		"idx_tags_project_lower_name",
+		"idx_issue_tags_issue_id",
+		"idx_issue_comments_issue_created",
+		"idx_issue_activity_issue_created",
+	} {
+		var indexCount int
+		if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?", indexName).Scan(&indexCount); err != nil {
+			t.Fatalf("verify index %s: %v", indexName, err)
+		}
+		if indexCount != 1 {
+			t.Errorf("expected index %s, got %d", indexName, indexCount)
+		}
 	}
 }
 

@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,10 +12,24 @@ import (
 
 type IssueRepository struct {
 	db *sql.DB
+	q  sqlRunner
 }
 
 func NewIssueRepository(db *sql.DB) *IssueRepository {
-	return &IssueRepository{db: db}
+	return newIssueRepository(db, db)
+}
+
+func newIssueRepository(db *sql.DB, q sqlRunner) *IssueRepository {
+	return &IssueRepository{db: db, q: q}
+}
+
+func (r *IssueRepository) WithTx(fn func(*IssueRepository) error) error {
+	if r.db == nil {
+		return fn(r)
+	}
+	return WithTx(r.db, func(repos Repositories) error {
+		return fn(repos.Issues)
+	})
 }
 
 type IssueFilters struct {
@@ -22,6 +38,19 @@ type IssueFilters struct {
 }
 
 func (r *IssueRepository) Create(projectID, title, description, status, priority string) (*Issue, error) {
+	if r.db != nil {
+		var issue *Issue
+		err := r.WithTx(func(txRepo *IssueRepository) error {
+			var err error
+			issue, err = txRepo.create(projectID, title, description, status, priority)
+			return err
+		})
+		return issue, err
+	}
+	return r.create(projectID, title, description, status, priority)
+}
+
+func (r *IssueRepository) create(projectID, title, description, status, priority string) (*Issue, error) {
 	uid, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generate uuid: %w", err)
@@ -34,14 +63,8 @@ func (r *IssueRepository) Create(projectID, title, description, status, priority
 		priority = "medium"
 	}
 
-	tx, err := r.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("begin create issue: %w", err)
-	}
-	defer tx.Rollback()
-
 	var position int
-	if err := tx.QueryRow(
+	if err := r.q.QueryRow(
 		"SELECT COALESCE(MAX(position), 0) + 1 FROM issues WHERE project_id = ?",
 		projectID,
 	).Scan(&position); err != nil {
@@ -63,7 +86,7 @@ func (r *IssueRepository) Create(projectID, title, description, status, priority
 		UpdatedAt:   now,
 	}
 
-	_, err = tx.Exec(
+	_, err = r.q.Exec(
 		`INSERT INTO issues (id, project_id, identifier, position, title, description, status, priority, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		iss.ID, iss.ProjectID, iss.Identifier, iss.Position, iss.Title, iss.Description,
@@ -72,9 +95,6 @@ func (r *IssueRepository) Create(projectID, title, description, status, priority
 	if err != nil {
 		return nil, fmt.Errorf("insert issue: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit create issue: %w", err)
-	}
 
 	return iss, nil
 }
@@ -82,7 +102,7 @@ func (r *IssueRepository) Create(projectID, title, description, status, priority
 func (r *IssueRepository) GetByID(id string) (*Issue, error) {
 	iss := &Issue{}
 	var createdAt, updatedAt string
-	err := r.db.QueryRow(
+	err := r.q.QueryRow(
 		`SELECT id, project_id, identifier, position, title, description, status, priority,
 		        assignee_id, creator_id, created_at, updated_at
 		 FROM issues WHERE id = ?`, id,
@@ -120,7 +140,7 @@ func (r *IssueRepository) ListByProject(projectID string, filters IssueFilters) 
 	}
 	query += " ORDER BY position ASC"
 
-	rows, err := r.db.Query(query, args...)
+	rows, err := r.q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list issues: %w", err)
 	}
@@ -131,7 +151,7 @@ func (r *IssueRepository) ListByProject(projectID string, filters IssueFilters) 
 
 func (r *IssueRepository) Update(iss *Issue) error {
 	iss.UpdatedAt = time.Now().UTC()
-	_, err := r.db.Exec(
+	_, err := r.q.Exec(
 		`UPDATE issues SET title = ?, description = ?, status = ?, priority = ?,
 		       assignee_id = ?, creator_id = ?, updated_at = ?
 		 WHERE id = ?`,
@@ -146,7 +166,7 @@ func (r *IssueRepository) Update(iss *Issue) error {
 
 func (r *IssueRepository) UpdateStatus(id, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.Exec("UPDATE issues SET status = ?, updated_at = ? WHERE id = ?", status, now, id)
+	_, err := r.q.Exec("UPDATE issues SET status = ?, updated_at = ? WHERE id = ?", status, now, id)
 	if err != nil {
 		return fmt.Errorf("update issue status: %w", err)
 	}
@@ -154,11 +174,65 @@ func (r *IssueRepository) UpdateStatus(id, status string) error {
 }
 
 func (r *IssueRepository) Delete(id string) error {
-	_, err := r.db.Exec("DELETE FROM issues WHERE id = ?", id)
+	_, err := r.q.Exec("DELETE FROM issues WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete issue: %w", err)
 	}
 	return nil
+}
+
+type IssueFieldChange struct {
+	Field        string
+	OldValue     string
+	NewValue     string
+	ActivityType string
+}
+
+func MeaningfulIssueChanges(before, after *Issue) []IssueFieldChange {
+	if before == nil || after == nil {
+		return nil
+	}
+
+	candidates := []IssueFieldChange{
+		{Field: "title", OldValue: before.Title, NewValue: after.Title, ActivityType: "issue.updated"},
+		{Field: "description", OldValue: before.Description, NewValue: after.Description, ActivityType: "issue.updated"},
+		{Field: "status", OldValue: before.Status, NewValue: after.Status, ActivityType: "status.changed"},
+		{Field: "priority", OldValue: before.Priority, NewValue: after.Priority, ActivityType: "issue.updated"},
+		{Field: "assignee_id", OldValue: before.AssigneeID, NewValue: after.AssigneeID, ActivityType: "assignee.changed"},
+		{Field: "creator_id", OldValue: before.CreatorID, NewValue: after.CreatorID, ActivityType: "creator.changed"},
+	}
+
+	changes := make([]IssueFieldChange, 0, len(candidates))
+	for _, change := range candidates {
+		change.OldValue = strings.TrimSpace(change.OldValue)
+		change.NewValue = strings.TrimSpace(change.NewValue)
+		if change.OldValue != change.NewValue {
+			changes = append(changes, change)
+		}
+	}
+	return changes
+}
+
+func ActivityInputsForIssueChanges(issueID, actorID string, changes []IssueFieldChange) ([]CreateIssueActivityInput, error) {
+	inputs := make([]CreateIssueActivityInput, 0, len(changes))
+	for _, change := range changes {
+		metadata, err := json.Marshal(map[string]string{
+			"field":     change.Field,
+			"old_value": change.OldValue,
+			"new_value": change.NewValue,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal issue change metadata: %w", err)
+		}
+		inputs = append(inputs, CreateIssueActivityInput{
+			IssueID:      issueID,
+			ActorID:      actorID,
+			Type:         change.ActivityType,
+			Summary:      fmt.Sprintf("%s changed", change.Field),
+			MetadataJSON: string(metadata),
+		})
+	}
+	return inputs, nil
 }
 
 func scanIssues(rows *sql.Rows) ([]*Issue, error) {
