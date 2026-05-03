@@ -521,6 +521,7 @@ describe('App', () => {
     let runtimes = [codexRuntime]
     const fetchApi = vi.fn((path: string, init?: RequestInit) => {
       if (path === '/api/projects') return Promise.resolve([])
+      if (path === '/api/agents') return Promise.resolve([])
       if (path === '/api/runtimes') return Promise.resolve({ runtimes })
       if (path === '/api/runtimes/runtime-codex' && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body))

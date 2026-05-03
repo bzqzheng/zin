@@ -255,7 +255,13 @@ func TestAgentCRUD(t *testing.T) {
 	_, _, ar, rr, cleanup := setupStore(t)
 	defer cleanup()
 
-	runtime, err := rr.Create("Codex", "codex", "codex", "/usr/local/bin/codex", "1.0.0", "healthy", "")
+	runtime, err := rr.Upsert(&store.Runtime{
+		Kind:         "codex",
+		DisplayName:  "Codex",
+		BinaryPath:   "/usr/local/bin/codex",
+		VersionRaw:   "1.0.0",
+		HealthStatus: "healthy",
+	})
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
