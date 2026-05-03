@@ -2,6 +2,7 @@ import type { ResourceState, LoadStatus } from '../App'
 import type { Issue, Project } from '../daemon'
 
 interface SidebarProps {
+  activeView: 'issues' | 'settings'
   daemonStatus: LoadStatus
   daemonError: string | null
   projects: ResourceState<Project[]>
@@ -11,6 +12,8 @@ interface SidebarProps {
   onRetryDaemon: () => void
   onRetryProjects: () => void
   onRetryIssues: () => void
+  onOpenIssues: () => void
+  onOpenSettings: () => void
   onSelectProject: (projectId: string) => void
   onSelectIssue: (issueId: string) => void
 }
@@ -39,6 +42,7 @@ function RetryButton({ onRetry }: { onRetry: () => void }) {
 }
 
 export default function Sidebar({
+  activeView,
   daemonStatus,
   daemonError,
   projects,
@@ -48,6 +52,8 @@ export default function Sidebar({
   onRetryDaemon,
   onRetryProjects,
   onRetryIssues,
+  onOpenIssues,
+  onOpenSettings,
   onSelectProject,
   onSelectIssue,
 }: SidebarProps) {
@@ -60,6 +66,30 @@ export default function Sidebar({
 
       <div className="flex-1 overflow-y-auto">
         <div className="px-3 py-2">
+          <div className="mb-3 grid grid-cols-2 gap-1 rounded border border-zinc-800 bg-zinc-950 p-1">
+            <button
+              type="button"
+              onClick={onOpenIssues}
+              className={`rounded px-2 py-1 text-xs font-medium ${
+                activeView === 'issues'
+                  ? 'bg-zinc-800 text-zinc-100'
+                  : 'text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300'
+              }`}
+            >
+              Issues
+            </button>
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className={`rounded px-2 py-1 text-xs font-medium ${
+                activeView === 'settings'
+                  ? 'bg-zinc-800 text-zinc-100'
+                  : 'text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300'
+              }`}
+            >
+              Settings
+            </button>
+          </div>
           <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider px-2 mb-1">
             Projects
           </h2>
@@ -91,7 +121,10 @@ export default function Sidebar({
               <button
                 key={project.id}
                 type="button"
-                onClick={() => onSelectProject(project.id)}
+                onClick={() => {
+                  onOpenIssues()
+                  onSelectProject(project.id)
+                }}
                 className={`w-full text-left px-2 py-1.5 text-sm rounded transition-colors ${
                   selectedProjectId === project.id
                     ? 'bg-zinc-800 text-zinc-100'
@@ -128,7 +161,10 @@ export default function Sidebar({
               <button
                 key={issue.id}
                 type="button"
-                onClick={() => onSelectIssue(issue.id)}
+                onClick={() => {
+                  onOpenIssues()
+                  onSelectIssue(issue.id)
+                }}
                 className={`w-full text-left px-2 py-1.5 text-sm rounded transition-colors flex items-center gap-2 ${
                   selectedIssueId === issue.id
                     ? 'bg-zinc-800 text-zinc-100'

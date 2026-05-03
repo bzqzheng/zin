@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from '../App'
 import { DaemonContext, type DaemonConnectionContext } from '../daemon/useDaemon'
-import type { Issue, IssueActivity, IssueComment, Project, Tag } from '../daemon'
+import type { Issue, IssueActivity, IssueComment, Project, RuntimeRecord, Tag } from '../daemon'
 
 const projectAlpha: Project = {
   id: 'project-alpha',
@@ -65,6 +65,19 @@ const activityCreated: IssueActivity = {
   summary: 'Created work item',
   metadata: {},
   created_at: '2026-05-02T14:00:00Z',
+}
+
+const codexRuntime: RuntimeRecord = {
+  id: 'runtime-codex',
+  kind: 'codex',
+  display_name: 'Codex CLI',
+  binary_path: '/usr/local/bin/codex',
+  version_raw: 'codex 0.42.0',
+  health_status: 'healthy',
+  health_reason: '',
+  last_checked_at: '2026-05-03T20:00:00Z',
+  created_at: '2026-05-03T19:58:00Z',
+  updated_at: '2026-05-03T20:00:00Z',
 }
 
 function interactionResponse(path: string) {
@@ -492,5 +505,85 @@ describe('App', () => {
     if (!secondComment) throw new Error('second comment missing')
     fireEvent.click(within(secondComment).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(screen.queryByText('Second comment')).not.toBeInTheDocument())
+  })
+
+  it('manages runtime discovery, path overrides, revalidation, and diagnostics from settings', async () => {
+    let runtimes = [codexRuntime]
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([])
+      if (path === '/api/runtimes') return Promise.resolve({ runtimes })
+      if (path === '/api/runtimes/runtime-codex' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body))
+        runtimes = [
+          {
+            ...runtimes[0],
+            display_name: body.display_name,
+            binary_path: body.binary_path,
+            health_status: 'degraded',
+            health_reason: 'probe_failed',
+            updated_at: '2026-05-03T20:03:00Z',
+          },
+        ]
+        return Promise.resolve({ runtime: runtimes[0] })
+      }
+      if (path === '/api/runtimes/validate' && init?.method === 'POST') {
+        return Promise.resolve({
+          runtime: {
+            id: 'runtime-codex',
+            health_status: 'healthy',
+            health_reason: '',
+            last_checked_at: '2026-05-03T20:05:00Z',
+          },
+        })
+      }
+      if (path === '/api/runtimes/discover' && init?.method === 'POST') {
+        runtimes = [
+          {
+            ...runtimes[0],
+            health_status: 'healthy',
+            health_reason: '',
+            last_checked_at: '2026-05-03T20:06:00Z',
+          },
+        ]
+        return Promise.resolve({ runtimes, summary: { healthy: 1, degraded: 0, missing: 3 } })
+      }
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Agent Runtimes' })).toBeVisible()
+    expect(await screen.findByText('Codex CLI')).toBeVisible()
+    expect(screen.getByText('Healthy')).toBeVisible()
+    expect(screen.getByText('Probe passed')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Binary path'), { target: { value: '/opt/homebrew/bin/codex' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Path' }))
+
+    expect(await screen.findByText('Degraded')).toBeVisible()
+    expect(screen.getByText('probe_failed')).toBeVisible()
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/runtimes/runtime-codex',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('/opt/homebrew/bin/codex'),
+        }),
+      )
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revalidate' }))
+    expect(await screen.findByText('Healthy')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discover' }))
+    expect(await screen.findByText('Missing 3')).toBeVisible()
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/runtimes/discover',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
   })
 })
