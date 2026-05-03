@@ -306,6 +306,60 @@ func TestAgentCRUD(t *testing.T) {
 	}
 }
 
+func TestRuntimeUpsertAndList(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	if err := migration.Run(database); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	repo := store.NewRuntimeRepository(database)
+	created, err := repo.Upsert(&store.Runtime{
+		Kind:         "codex",
+		DisplayName:  "Codex CLI",
+		BinaryPath:   "/usr/local/bin/codex",
+		VersionRaw:   "codex 1.0.0",
+		HealthStatus: "healthy",
+		HealthReason: "",
+	})
+	if err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+	if created.ID == "" || created.Kind != "codex" || created.HealthStatus != "healthy" {
+		t.Fatalf("unexpected created runtime: %#v", created)
+	}
+
+	updated, err := repo.Upsert(&store.Runtime{
+		Kind:         "codex",
+		DisplayName:  "Codex Stable",
+		BinaryPath:   "/opt/homebrew/bin/codex",
+		VersionRaw:   "",
+		HealthStatus: "degraded",
+		HealthReason: "probe_failed",
+	})
+	if err != nil {
+		t.Fatalf("upsert runtime update: %v", err)
+	}
+	if updated.ID != created.ID {
+		t.Fatalf("expected kind upsert to preserve id %s, got %s", created.ID, updated.ID)
+	}
+	if updated.DisplayName != "Codex Stable" || updated.HealthReason != "probe_failed" {
+		t.Fatalf("unexpected updated runtime: %#v", updated)
+	}
+
+	runtimes, err := repo.List()
+	if err != nil {
+		t.Fatalf("list runtimes: %v", err)
+	}
+	if len(runtimes) != 1 || runtimes[0].ID != created.ID {
+		t.Fatalf("expected one runtime, got %#v", runtimes)
+	}
+}
+
 func TestTagCRUDAndIssueAttachIdempotency(t *testing.T) {
 	_, pr, ir, tr, _, _, cleanup := setupInteractionStore(t)
 	defer cleanup()

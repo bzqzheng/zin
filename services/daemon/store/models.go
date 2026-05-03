@@ -22,6 +22,19 @@ type Agent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type Runtime struct {
+	ID            string    `json:"id"`
+	Kind          string    `json:"kind"`
+	DisplayName   string    `json:"display_name"`
+	BinaryPath    string    `json:"binary_path"`
+	VersionRaw    string    `json:"version_raw"`
+	HealthStatus  string    `json:"health_status"`
+	HealthReason  string    `json:"health_reason"`
+	LastCheckedAt time.Time `json:"last_checked_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type Issue struct {
 	ID          string    `json:"id"`
 	ProjectID   string    `json:"project_id"`
