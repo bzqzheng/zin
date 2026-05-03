@@ -1,23 +1,36 @@
-export default function Timeline() {
-  const events = [
-    { id: '1', action: 'Issue created', agent: 'Coordinator', time: '2h ago', type: 'create' },
-    { id: '2', action: 'Assigned to Assistant', agent: 'Coordinator', time: '1h ago', type: 'assign' },
-    { id: '3', action: 'Status: In Progress', agent: 'Assistant', time: '5m ago', type: 'status' },
-    { id: '4', action: 'Scaffold started', agent: 'Assistant', time: 'just now', type: 'update' },
-  ]
+import type { ResourceState } from '../App'
+import type { Issue } from '../daemon'
 
-  const typeDot = (t: string) => {
-    switch (t) {
-      case 'create':
-        return 'bg-emerald-500'
-      case 'assign':
-        return 'bg-blue-500'
-      case 'status':
-        return 'bg-amber-500'
-      default:
-        return 'bg-zinc-600'
-    }
-  }
+interface TimelineProps {
+  issue: ResourceState<Issue | null>
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+export default function Timeline({ issue }: TimelineProps) {
+  const events = issue.data
+    ? [
+        {
+          id: 'created',
+          action: 'Issue created',
+          time: formatDateTime(issue.data.created_at),
+          dot: 'bg-emerald-500',
+        },
+        {
+          id: 'updated',
+          action: `Status: ${issue.data.status}`,
+          time: formatDateTime(issue.data.updated_at),
+          dot: 'bg-amber-500',
+        },
+      ]
+    : []
 
   return (
     <aside className="w-72 bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden">
@@ -26,28 +39,34 @@ export default function Timeline() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2">
-        <div className="space-y-1">
-          {events.map((event) => (
-            <div
-              key={event.id}
-              className="flex gap-3 px-2 py-2 rounded hover:bg-zinc-800/50 transition-colors"
-            >
-              <div className="relative mt-0.5">
-                <div className={`w-2 h-2 rounded-full ${typeDot(event.type)}`} />
+        {issue.status === 'loading' && (
+          <p className="px-2 py-2 text-sm text-zinc-500">Loading timeline...</p>
+        )}
+        {issue.status !== 'loading' && events.length === 0 && (
+          <p className="px-2 py-2 text-sm text-zinc-500">No timeline events</p>
+        )}
+        {events.length > 0 && (
+          <div className="space-y-1">
+            {events.map((event) => (
+              <div
+                key={event.id}
+                className="flex gap-3 px-2 py-2 rounded hover:bg-zinc-800/50 transition-colors"
+              >
+                <div className="relative mt-0.5">
+                  <div className={`w-2 h-2 rounded-full ${event.dot}`} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm text-zinc-300 truncate">{event.action}</p>
+                  <p className="text-xs text-zinc-500">{event.time}</p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-sm text-zinc-300 truncate">{event.action}</p>
-                <p className="text-xs text-zinc-500">
-                  {event.agent} · {event.time}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="px-4 py-3 border-t border-zinc-800">
-        <p className="text-xs text-zinc-600">4 events · Phase 1</p>
+        <p className="text-xs text-zinc-600">{events.length} events</p>
       </div>
     </aside>
   )
