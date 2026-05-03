@@ -14,13 +14,41 @@ import (
 	"time"
 )
 
+type runtimeRecord struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	DisplayName  string `json:"display_name"`
+	BinaryPath   string `json:"binary_path"`
+	VersionRaw   string `json:"version_raw"`
+	HealthStatus string `json:"health_status"`
+	HealthReason string `json:"health_reason"`
+}
+
+type discoverResponse struct {
+	Runtimes []runtimeRecord `json:"runtimes"`
+	Summary  struct {
+		Healthy  int `json:"healthy"`
+		Degraded int `json:"degraded"`
+		Missing  int `json:"missing"`
+	} `json:"summary"`
+}
+
+type runtimeListResponse struct {
+	Runtimes []runtimeRecord `json:"runtimes"`
+}
+
 func TestE2E(t *testing.T) {
 	dir := t.TempDir()
 	os.Setenv("ZIN_DATA_DIR", dir)
 	defer os.Unsetenv("ZIN_DATA_DIR")
 
+	runtimeDir := t.TempDir()
+	writeMockRuntimeBinary(t, runtimeDir, "claude", "#!/bin/sh\necho 'Claude CLI version 1.0.0'\n")
+	writeMockRuntimeBinary(t, runtimeDir, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	writeMockRuntimeBinary(t, runtimeDir, "gemini", "#!/bin/sh\necho 'gemini-cli 0.1.0'\n")
+
 	daemonPath := ensureDaemonBinary(t)
-	baseURL, stop := startDaemon(t, daemonPath, dir)
+	baseURL, stop := startDaemonWithPath(t, daemonPath, dir, runtimeDir)
 	defer stop()
 
 	t.Run("health check", func(t *testing.T) {
@@ -157,9 +185,61 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	var runtimeID string
+	var codexDegradedState struct {
+		status string
+		reason string
+	}
+	var persistedStates map[string]string
+	t.Run("discover runtimes and verify health states", func(t *testing.T) {
+		var result discoverResponse
+		if err := apiPost(fmt.Sprintf("%s/api/runtimes/discover", baseURL), map[string]interface{}{}, &result); err != nil {
+			t.Fatalf("discover runtimes failed: %v", err)
+		}
+		if len(result.Runtimes) != 4 {
+			t.Fatalf("expected 4 runtimes, got %d: %#v", len(result.Runtimes), result.Runtimes)
+		}
+		got := map[string]string{}
+		for _, rt := range result.Runtimes {
+			got[rt.Kind] = rt.HealthStatus
+			if rt.Kind == "codex" {
+				runtimeID = rt.ID
+			}
+		}
+		if got["claude"] != "healthy" || got["codex"] != "healthy" || got["gemini"] != "healthy" {
+			t.Fatalf("expected mock claude/codex/gemini to be healthy, got: %#v", got)
+		}
+		if got["opencode"] == "" {
+			t.Fatal("expected opencode runtime in discovery results")
+		}
+		persistedStates = got
+	})
+
+	t.Run("force runtime to degraded and verify state persists through restart", func(t *testing.T) {
+		if runtimeID == "" {
+			t.Skip("no runtime discovered")
+		}
+		failDir := t.TempDir()
+		writeMockRuntimeBinary(t, failDir, "codex", "#!/bin/sh\nexit 9\n")
+		failBinary := filepath.Join(failDir, "codex")
+
+		var result struct {
+			Runtime runtimeRecord `json:"runtime"`
+		}
+		payload := map[string]string{"binary_path": failBinary}
+		if err := apiPut(fmt.Sprintf("%s/api/runtimes/%s", baseURL, runtimeID), payload, &result); err != nil {
+			t.Fatalf("force degraded runtime failed: %v", err)
+		}
+		if result.Runtime.HealthStatus != "degraded" || result.Runtime.HealthReason != "probe_failed" {
+			t.Fatalf("expected degraded/probe_failed from PUT, got %#v", result.Runtime)
+		}
+		codexDegradedState.status = result.Runtime.HealthStatus
+		codexDegradedState.reason = result.Runtime.HealthReason
+	})
+
 	stop()
 
-	baseURL, stop = startDaemon(t, daemonPath, dir)
+	baseURL, stop = startDaemonWithPath(t, daemonPath, dir, runtimeDir)
 	defer stop()
 
 	t.Run("verify persisted state after daemon restart", func(t *testing.T) {
@@ -203,13 +283,51 @@ func TestE2E(t *testing.T) {
 			t.Fatalf("expected persisted activity, got %#v", events)
 		}
 	})
+
+	t.Run("verify runtime state persists after daemon restart", func(t *testing.T) {
+		var list runtimeListResponse
+		if err := apiGet(fmt.Sprintf("%s/api/runtimes", baseURL), &list); err != nil {
+			t.Fatalf("list runtimes after restart failed: %v", err)
+		}
+		if len(list.Runtimes) != 4 {
+			t.Fatalf("expected 4 persisted runtimes, got %d: %#v", len(list.Runtimes), list.Runtimes)
+		}
+		got := map[string]string{}
+		var codexRT runtimeRecord
+		for _, rt := range list.Runtimes {
+			got[rt.Kind] = rt.HealthStatus
+			if rt.Kind == "codex" {
+				codexRT = rt
+			}
+		}
+		if got["claude"] != "healthy" || got["gemini"] != "healthy" {
+			t.Fatalf("expected mock claude/gemini to persist as healthy, got: %#v", got)
+		}
+		if got["opencode"] != persistedStates["opencode"] {
+			t.Fatalf("opencode state changed from %q to %q after restart", persistedStates["opencode"], got["opencode"])
+		}
+		if codexRT.HealthStatus != codexDegradedState.status || codexRT.HealthReason != codexDegradedState.reason {
+			t.Fatalf("degraded state did not persist across restart: before=%s/%s after=%s/%s",
+				codexDegradedState.status, codexDegradedState.reason,
+				codexRT.HealthStatus, codexRT.HealthReason)
+		}
+	})
 }
 
 func startDaemon(t *testing.T, daemonPath, dir string) (string, func()) {
 	t.Helper()
+	return startDaemonWithPath(t, daemonPath, dir, "")
+}
+
+func startDaemonWithPath(t *testing.T, daemonPath, dir, runtimeDir string) (string, func()) {
+	t.Helper()
 
 	cmd := exec.Command(daemonPath, "--port", "0", "--data-dir", dir)
-	cmd.Env = append(os.Environ(), "ZIN_DATA_DIR="+dir)
+	env := append(os.Environ(), "ZIN_DATA_DIR="+dir)
+	if runtimeDir != "" {
+		env = append(env, "PATH="+runtimeDir+":"+os.Getenv("PATH"))
+	}
+	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -315,6 +433,39 @@ func apiPost(url string, payload interface{}, result interface{}) error {
 	return nil
 }
 
+func apiPut(url string, payload interface{}, result interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create PUT request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if err := json.Unmarshal(body, result); err != nil {
+		return fmt.Errorf("unmarshal: %w (body: %s)", err, string(body))
+	}
+	return nil
+}
+
 func ensureDaemonBinary(t *testing.T) string {
 	t.Helper()
 
@@ -393,5 +544,13 @@ func repoRoot(t *testing.T) string {
 			t.Fatal("repo root with go.mod not found")
 		}
 		wd = parent
+	}
+}
+
+func writeMockRuntimeBinary(t *testing.T, runtimeDir, name, content string) {
+	t.Helper()
+	path := filepath.Join(runtimeDir, name)
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		t.Fatalf("write mock runtime binary %s: %v", name, err)
 	}
 }
