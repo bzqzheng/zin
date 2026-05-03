@@ -83,7 +83,7 @@ func run() error {
 		handler.NewProjectHandler(projectRepo),
 		handler.NewIssueHandler(database, issueRepo, projectRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
-		handler.NewAgentHandler(agentRepo),
+		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
 		shutdownCh,
 	)

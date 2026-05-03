@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
-import IssueDetail, { type IssueUpdateInput } from './components/IssueDetail'
+import IssueDetail, { type AgentConfigInput, type IssueUpdateInput } from './components/IssueDetail'
 import RuntimeSettings from './components/RuntimeSettings'
 import Timeline from './components/Timeline'
 import { useDaemon } from './daemon'
@@ -8,6 +8,7 @@ import type {
   Issue,
   IssueActivity,
   IssueComment,
+  Agent,
   Project,
   RuntimeDiscoveryResponse,
   RuntimeDiscoverySummary,
@@ -103,6 +104,18 @@ const emptyLoadedActivity: ResourceState<IssueActivity[]> = {
   error: null,
 }
 
+const emptyAgents: ResourceState<Agent[]> = {
+  status: 'idle',
+  data: [],
+  error: null,
+}
+
+const emptyLoadedAgents: ResourceState<Agent[]> = {
+  status: 'success',
+  data: [],
+  error: null,
+}
+
 const emptyRuntimes: ResourceState<RuntimeRecord[]> = {
   status: 'idle',
   data: [],
@@ -151,6 +164,7 @@ export default function App() {
   const [issueTags, setIssueTags] = useState<ResourceState<Tag[]>>(emptyIssueTags)
   const [comments, setComments] = useState<ResourceState<IssueComment[]>>(emptyComments)
   const [activity, setActivity] = useState<ResourceState<IssueActivity[]>>(emptyActivity)
+  const [agents, setAgents] = useState<ResourceState<Agent[]>>(emptyAgents)
   const [runtimes, setRuntimes] = useState<ResourceState<RuntimeRecord[]>>(emptyRuntimes)
   const [runtimeDiscoverySummary, setRuntimeDiscoverySummary] = useState<RuntimeDiscoverySummary | null>(null)
   const [preferredProjectId, setPreferredProjectId] = useState<string | null>(null)
@@ -235,6 +249,8 @@ export default function App() {
     [fetchApi],
   )
 
+  const fetchAgents = useCallback(() => fetchApi<Agent[]>('/api/agents'), [fetchApi])
+
   const fetchRuntimes = useCallback(
     () => fetchApi<RuntimeListResponse | RuntimeRecord[]>('/api/runtimes'),
     [fetchApi],
@@ -252,6 +268,7 @@ export default function App() {
     setIssueDetail(emptyIssueDetail)
     setProjectTags(emptyProjectTags)
     resetIssueInteractions()
+    setAgents(emptyAgents)
     setRuntimes(emptyRuntimes)
     setRuntimeDiscoverySummary(null)
     setPreferredProjectId(null)
@@ -667,6 +684,40 @@ export default function App() {
     [fetchApi, reloadIssueContext, runMutation, selectedIssueId, selectedProjectId],
   )
 
+  const loadAgents = useCallback(async () => {
+    if (!baseURL) {
+      setAgents(emptyLoadedAgents)
+      return
+    }
+    setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
+    try {
+      const data = await fetchAgents()
+      setAgents({ status: 'success', data, error: null })
+    } catch (err) {
+      setAgents({ status: 'error', data: [], error: errorMessage(err) })
+    }
+  }, [baseURL, fetchAgents])
+
+  const createAgent = useCallback(
+    async (input: AgentConfigInput) => {
+      await runMutation(async () => {
+        await fetchApi<Agent>('/api/agents', jsonRequest('POST', input))
+        await loadAgents()
+      })
+    },
+    [fetchApi, loadAgents, runMutation],
+  )
+
+  const updateAgent = useCallback(
+    async (agentId: string, input: AgentConfigInput) => {
+      await runMutation(async () => {
+        await fetchApi<Agent>(`/api/agents/${agentId}`, jsonRequest('PUT', input))
+        await loadAgents()
+      })
+    },
+    [fetchApi, loadAgents, runMutation],
+  )
+
   const selectProject = useCallback(
     (projectId: string) => {
       if (projectId === selectedProjectId) return
@@ -763,6 +814,38 @@ export default function App() {
       cancelled = true
     }
   }, [baseURL, fetchProjects, resetIssueInteractions])
+
+  useEffect(() => {
+    if (!baseURL) return
+
+    let cancelled = false
+
+    async function load() {
+      setAgents((prev) => ({ ...prev, status: 'loading', error: null }))
+      setRuntimes((prev) => ({ ...prev, status: 'loading', error: null }))
+      const [agentResult, runtimeResult] = await Promise.allSettled([fetchAgents(), fetchRuntimes()])
+
+      if (cancelled) return
+
+      if (agentResult.status === 'fulfilled') {
+        setAgents({ status: 'success', data: agentResult.value ?? [], error: null })
+      } else {
+        setAgents({ status: 'error', data: [], error: errorMessage(agentResult.reason) })
+      }
+
+      if (runtimeResult.status === 'fulfilled') {
+        setRuntimes({ status: 'success', data: runtimeList(runtimeResult.value ?? []), error: null })
+      } else {
+        setRuntimes({ status: 'error', data: [], error: errorMessage(runtimeResult.reason) })
+      }
+    }
+
+    void load()
+
+    return () => {
+      cancelled = true
+    }
+  }, [baseURL, fetchAgents, fetchRuntimes])
 
   useEffect(() => {
     if (!baseURL || projects.status !== 'success') return
@@ -915,6 +998,8 @@ export default function App() {
             projectTags={visibleProjectTags}
             issueTags={visibleIssueTags}
             comments={visibleComments}
+            agents={agents}
+            runtimes={runtimes}
             mutationPending={mutationPending}
             mutationError={mutationError}
             onRetryIssue={() => loadIssueDetail()}
@@ -922,6 +1007,9 @@ export default function App() {
               void Promise.all([loadProjectTags(), loadIssueTags()])
             }}
             onRetryComments={() => loadComments()}
+            onRetryAgents={() => {
+              void Promise.all([loadAgents(), loadRuntimes()])
+            }}
             onUpdateIssue={updateIssue}
             onCreateTag={createTag}
             onAttachTag={attachTag}
@@ -929,6 +1017,8 @@ export default function App() {
             onCreateComment={createComment}
             onUpdateComment={updateComment}
             onDeleteComment={deleteComment}
+            onCreateAgent={createAgent}
+            onUpdateAgent={updateAgent}
           />
           <Timeline
             activity={visibleActivity}

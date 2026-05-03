@@ -41,7 +41,7 @@ func setupRouter(t *testing.T) (http.Handler, *store.ProjectRepository, *store.I
 		handler.NewProjectHandler(projectRepo),
 		handler.NewIssueHandler(database, issueRepo, projectRepo),
 		handler.NewInteractionHandler(database, projectRepo, issueRepo, tagRepo, commentRepo, activityRepo),
-		handler.NewAgentHandler(agentRepo),
+		handler.NewAgentHandler(agentRepo, runtimeRepo),
 		handler.NewRuntimeHandler(runtimeRepo),
 		make(chan struct{}, 1),
 	)
@@ -235,6 +235,53 @@ func TestErrorEnvelopeAlwaysIncludesDetails(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAgentRuntimeBindingAndAssignableFilter(t *testing.T) {
+	router, _, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	claude := writeHandlerExecutable(t, "claude", "#!/bin/sh\nexit 9\n")
+	discovered := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`,"claude":`+mustJSONQuote(t, claude)+`}}`, http.StatusOK)
+
+	var healthy, degraded store.Runtime
+	for _, runtime := range discovered.Runtimes {
+		switch runtime.Kind {
+		case "codex":
+			healthy = runtime
+		case "claude":
+			degraded = runtime
+		}
+	}
+	if healthy.ID == "" || degraded.ID == "" {
+		t.Fatalf("expected healthy and degraded runtimes, got %#v", discovered.Runtimes)
+	}
+
+	assignable := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+healthy.ID+`","model":"gpt-5","instructions":"Complete the work."}`, http.StatusCreated)
+	if !assignable.Assignable || assignable.RuntimeStatus != "healthy" || assignable.RuntimeName == "" || assignable.Model != "gpt-5" {
+		t.Fatalf("expected healthy runtime agent to be assignable, got %#v", assignable)
+	}
+
+	blocked := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Smith","role":"reviewer","runtime_id":"`+degraded.ID+`"}`, http.StatusCreated)
+	if blocked.Assignable || !strings.Contains(blocked.AssignableReason, "degraded") {
+		t.Fatalf("expected degraded runtime agent to be gated with explicit reason, got %#v", blocked)
+	}
+
+	filtered := requestJSON[[]store.Agent](t, router, http.MethodGet, "/api/agents?assignable=true", ``, http.StatusOK)
+	if len(filtered) != 1 || filtered[0].ID != assignable.ID {
+		t.Fatalf("expected assignable filter to return only healthy runtime agent, got %#v", filtered)
+	}
+
+	updated := requestJSON[store.Agent](t, router, http.MethodPut, "/api/agents/"+blocked.ID, `{"runtime_id":"`+healthy.ID+`","model":"claude-sonnet","instructions":"Review carefully."}`, http.StatusOK)
+	if !updated.Assignable || updated.Model != "claude-sonnet" || updated.Instructions != "Review carefully." {
+		t.Fatalf("expected update to bind healthy runtime and persist config, got %#v", updated)
+	}
+
+	assertStatus(t, router, http.MethodPost, "/api/agents", `{"name":"Missing","runtime_id":"missing"}`, http.StatusBadRequest)
 }
 
 func TestRuntimeDiscoveryContracts(t *testing.T) {

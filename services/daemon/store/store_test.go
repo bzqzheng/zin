@@ -10,7 +10,7 @@ import (
 	"github.com/bzqzheng/zin/services/daemon/store"
 )
 
-func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository, *store.AgentRepository, func()) {
+func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository, *store.AgentRepository, *store.RuntimeRepository, func()) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -26,12 +26,13 @@ func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository,
 	pr := store.NewProjectRepository(database)
 	ir := store.NewIssueRepository(database)
 	ar := store.NewAgentRepository(database)
+	rr := store.NewRuntimeRepository(database)
 
 	cleanup := func() {
 		database.Close()
 	}
 
-	return pr, ir, ar, cleanup
+	return pr, ir, ar, rr, cleanup
 }
 
 func setupInteractionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *store.IssueRepository, *store.TagRepository, *store.IssueCommentRepository, *store.IssueActivityRepository, func()) {
@@ -61,7 +62,7 @@ func setupInteractionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *st
 }
 
 func TestProjectCRUD(t *testing.T) {
-	pr, _, _, cleanup := setupStore(t)
+	pr, _, _, _, cleanup := setupStore(t)
 	defer cleanup()
 
 	project, err := pr.Create("Test Project", "A test project")
@@ -112,7 +113,7 @@ func TestProjectCRUD(t *testing.T) {
 }
 
 func TestIssueCRUD(t *testing.T) {
-	pr, ir, _, cleanup := setupStore(t)
+	pr, ir, _, _, cleanup := setupStore(t)
 	defer cleanup()
 
 	project, err := pr.Create("Test Project", "")
@@ -183,7 +184,7 @@ func TestIssueCRUD(t *testing.T) {
 }
 
 func TestIssueFiltersGeneratedFieldsAndCascade(t *testing.T) {
-	pr, ir, _, cleanup := setupStore(t)
+	pr, ir, _, _, cleanup := setupStore(t)
 	defer cleanup()
 
 	project, err := pr.Create("Filtered Project", "")
@@ -251,10 +252,15 @@ func TestIssueFiltersGeneratedFieldsAndCascade(t *testing.T) {
 }
 
 func TestAgentCRUD(t *testing.T) {
-	_, _, ar, cleanup := setupStore(t)
+	_, _, ar, rr, cleanup := setupStore(t)
 	defer cleanup()
 
-	agent, err := ar.Create("Build Agent", "craftsperson")
+	runtime, err := rr.Create("Codex", "codex", "codex", "/usr/local/bin/codex", "1.0.0", "healthy", "")
+	if err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+
+	agent, err := ar.Create("Build Agent", "craftsperson", runtime.ID, "gpt-5", "Ship complete work.")
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
@@ -263,6 +269,9 @@ func TestAgentCRUD(t *testing.T) {
 	}
 	if agent.Status != "offline" {
 		t.Errorf("expected status 'offline', got '%s'", agent.Status)
+	}
+	if !agent.Assignable {
+		t.Errorf("expected agent with healthy runtime to be assignable: %s", agent.AssignableReason)
 	}
 
 	got, err := ar.GetByID(agent.ID)
@@ -276,11 +285,13 @@ func TestAgentCRUD(t *testing.T) {
 	agent.Name = "Oracle"
 	agent.Role = "advisor"
 	agent.Status = "online"
+	agent.Model = "gpt-5-mini"
+	agent.Instructions = "Advise carefully."
 	if err := ar.Update(agent); err != nil {
 		t.Fatalf("update agent: %v", err)
 	}
 
-	agents, err := ar.List()
+	agents, err := ar.List(false)
 	if err != nil {
 		t.Fatalf("list agents: %v", err)
 	}
@@ -300,7 +311,7 @@ func TestAgentCRUD(t *testing.T) {
 		t.Fatalf("delete agent: %v", err)
 	}
 
-	agents, _ = ar.List()
+	agents, _ = ar.List(false)
 	if len(agents) != 0 {
 		t.Errorf("expected 0 agents after delete, got %d", len(agents))
 	}

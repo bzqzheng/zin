@@ -14,12 +14,19 @@ type Project struct {
 }
 
 type Agent struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	Role             string    `json:"role"`
+	Status           string    `json:"status"`
+	RuntimeID        string    `json:"runtime_id"`
+	RuntimeName      string    `json:"runtime_name"`
+	RuntimeStatus    string    `json:"runtime_status"`
+	Model            string    `json:"model"`
+	Instructions     string    `json:"instructions"`
+	Assignable       bool      `json:"assignable"`
+	AssignableReason string    `json:"assignable_reason"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type Runtime struct {
