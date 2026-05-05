@@ -68,8 +68,18 @@ export interface IssueAssignment {
   source_type: 'issue_detail' | 'comment'
   source_id: string
   client_request_id: string
-  status: 'queued' | 'accepted' | 'completed' | 'failed' | 'cancelled'
+  status:
+    | 'queued'
+    | 'retrieving_memory'
+    | 'ready'
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+    | 'cancelled'
+    | 'retrieval_failed'
   dedupe_key: string
+  error_code: string
+  error_message: string
   requested_at: string
   accepted_at: string | null
   completed_at: string | null

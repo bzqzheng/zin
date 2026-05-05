@@ -100,6 +100,8 @@ type IssueAssignment struct {
 	RequestFingerprint string     `json:"request_fingerprint"`
 	Status             string     `json:"status"`
 	DedupeKey          string     `json:"dedupe_key"`
+	ErrorCode          string     `json:"error_code"`
+	ErrorMessage       string     `json:"error_message"`
 	RequestedAt        time.Time  `json:"requested_at"`
 	AcceptedAt         *time.Time `json:"accepted_at"`
 	CompletedAt        *time.Time `json:"completed_at"`
@@ -107,6 +109,17 @@ type IssueAssignment struct {
 	CancelledAt        *time.Time `json:"cancelled_at"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+type AssignmentResult struct {
+	ResultID     string    `json:"result_id"`
+	AssignmentID string    `json:"assignment_id"`
+	AttemptNo    int       `json:"attempt_no"`
+	Output       string    `json:"output"`
+	Status       string    `json:"status"`
+	Error        string    `json:"error"`
+	StartedAt    time.Time `json:"started_at"`
+	FinishedAt   time.Time `json:"finished_at"`
 }
 
 func parseTime(s string) (time.Time, error) {

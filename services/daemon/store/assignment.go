@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -23,6 +24,18 @@ type CreateIssueAssignmentInput struct {
 	RequestFingerprint string
 	DedupeKey          string
 }
+
+type CompleteAssignmentInput struct {
+	AssignmentID string
+	Output       string
+	StartedAt    time.Time
+	FinishedAt   time.Time
+}
+
+var (
+	ErrAssignmentStateConflict     = errors.New("ASSIGNMENT_STATE_CONFLICT")
+	ErrAssignmentInvalidTransition = errors.New("ASSIGNMENT_INVALID_TRANSITION")
+)
 
 func NewIssueAssignmentRepository(db *sql.DB) *IssueAssignmentRepository {
 	return newIssueAssignmentRepository(db, db)
@@ -95,6 +108,7 @@ func (r *IssueAssignmentRepository) ListByIssue(issueID string) ([]*IssueAssignm
 		`SELECT ia.id, ia.issue_id, COALESCE(ia.agent_id, ''), COALESCE(a.name, ''), COALESCE(a.runtime_id, ''),
 		        COALESCE(rt.display_name, ''), COALESCE(rt.health_status, ''), ia.requested_by, ia.source_type, ia.source_id,
 		        ia.client_request_id, ia.request_fingerprint, ia.status, ia.dedupe_key,
+		        ia.error_code, ia.error_message,
 		        ia.requested_at, ia.accepted_at, ia.completed_at, ia.failed_at, ia.cancelled_at, ia.created_at, ia.updated_at
 		 FROM issue_assignments ia
 		 LEFT JOIN agents a ON a.id = ia.agent_id
@@ -124,10 +138,10 @@ func (r *IssueAssignmentRepository) ListByIssue(issueID string) ([]*IssueAssignm
 
 func (r *IssueAssignmentRepository) Cancel(id string) (*IssueAssignment, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.q.Exec(
+	res, err := r.q.Exec(
 		`UPDATE issue_assignments
-		 SET status = 'cancelled', cancelled_at = ?, updated_at = ?
-		 WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
+		 SET status = 'cancelled', cancelled_at = ?, error_code = '', error_message = '', updated_at = ?
+		 WHERE id = ? AND status NOT IN ('succeeded', 'failed', 'cancelled', 'retrieval_failed')`,
 		now,
 		now,
 		id,
@@ -135,7 +149,180 @@ func (r *IssueAssignmentRepository) Cancel(id string) (*IssueAssignment, error) 
 	if err != nil {
 		return nil, fmt.Errorf("cancel issue assignment: %w", err)
 	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, err
+	}
 	return r.GetByID(id)
+}
+
+func (r *IssueAssignmentRepository) TransitionCAS(id, fromStatus, toStatus string) (*IssueAssignment, error) {
+	if !validAssignmentTransition(fromStatus, toStatus) {
+		return nil, ErrAssignmentInvalidTransition
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := r.q.Exec(
+		`UPDATE issue_assignments
+		 SET status = ?, error_code = '', error_message = '', updated_at = ?
+		 WHERE id = ? AND status = ?`,
+		toStatus,
+		now,
+		id,
+		fromStatus,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("transition issue assignment: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, err
+	}
+	return r.GetByID(id)
+}
+
+func validAssignmentTransition(fromStatus, toStatus string) bool {
+	switch fromStatus {
+	case "queued":
+		return toStatus == "retrieving_memory"
+	case "retrieving_memory":
+		return toStatus == "ready" || toStatus == "retrieval_failed"
+	case "ready":
+		return toStatus == "running"
+	default:
+		return false
+	}
+}
+
+func (r *IssueAssignmentRepository) FailCAS(id, fromStatus, code, message string) (*IssueAssignment, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := r.q.Exec(
+		`UPDATE issue_assignments
+		 SET status = 'failed', failed_at = ?, error_code = ?, error_message = ?, updated_at = ?
+		 WHERE id = ? AND status = ?`,
+		now,
+		code,
+		message,
+		now,
+		id,
+		fromStatus,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("fail issue assignment: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, err
+	}
+	return r.GetByID(id)
+}
+
+func (r *IssueAssignmentRepository) CompleteWithResult(input CompleteAssignmentInput) (*IssueAssignment, *AssignmentResult, error) {
+	startedAt := input.StartedAt.UTC()
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	finishedAt := input.FinishedAt.UTC()
+	if finishedAt.IsZero() {
+		finishedAt = time.Now().UTC()
+	}
+
+	resultID, err := uuid.NewV7()
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate result uuid: %w", err)
+	}
+	var attemptNo int
+	if err := r.q.QueryRow(
+		`SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM assignment_results WHERE assignment_id = ?`,
+		input.AssignmentID,
+	).Scan(&attemptNo); err != nil {
+		return nil, nil, fmt.Errorf("select assignment result attempt: %w", err)
+	}
+
+	res, err := r.q.Exec(
+		`INSERT INTO assignment_results
+		 (result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at)
+		 SELECT ?, ?, ?, ?, 'succeeded', '', ?, ?
+		 WHERE EXISTS (SELECT 1 FROM issue_assignments WHERE id = ? AND status = 'running')`,
+		resultID.String(),
+		input.AssignmentID,
+		attemptNo,
+		input.Output,
+		startedAt.Format(time.RFC3339),
+		finishedAt.Format(time.RFC3339),
+		input.AssignmentID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("insert assignment result: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, nil, err
+	}
+
+	res, err = r.q.Exec(
+		`UPDATE issue_assignments
+		 SET status = 'succeeded', completed_at = ?, error_code = '', error_message = '', updated_at = ?
+		 WHERE id = ? AND status = 'running'`,
+		finishedAt.Format(time.RFC3339),
+		finishedAt.Format(time.RFC3339),
+		input.AssignmentID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mark assignment succeeded: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, nil, err
+	}
+
+	assignment, err := r.GetByID(input.AssignmentID)
+	if err != nil {
+		return nil, nil, err
+	}
+	result, err := r.GetResultByID(resultID.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	return assignment, result, nil
+}
+
+func (r *IssueAssignmentRepository) GetResultByID(id string) (*AssignmentResult, error) {
+	row := r.q.QueryRow(
+		`SELECT result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at
+		 FROM assignment_results
+		 WHERE result_id = ?`,
+		id,
+	)
+	result, err := scanAssignmentResult(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *IssueAssignmentRepository) ListResults(assignmentID string) ([]*AssignmentResult, error) {
+	rows, err := r.q.Query(
+		`SELECT result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at
+		 FROM assignment_results
+		 WHERE assignment_id = ?
+		 ORDER BY attempt_no ASC`,
+		assignmentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list assignment results: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*AssignmentResult
+	for rows.Next() {
+		result, err := scanAssignmentResult(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate assignment results: %w", err)
+	}
+	return results, nil
 }
 
 func (r *IssueAssignmentRepository) get(where string, arg string) (*IssueAssignment, error) {
@@ -143,6 +330,7 @@ func (r *IssueAssignmentRepository) get(where string, arg string) (*IssueAssignm
 		`SELECT ia.id, ia.issue_id, COALESCE(ia.agent_id, ''), COALESCE(a.name, ''), COALESCE(a.runtime_id, ''),
 		        COALESCE(rt.display_name, ''), COALESCE(rt.health_status, ''), ia.requested_by, ia.source_type, ia.source_id,
 		        ia.client_request_id, ia.request_fingerprint, ia.status, ia.dedupe_key,
+		        ia.error_code, ia.error_message,
 		        ia.requested_at, ia.accepted_at, ia.completed_at, ia.failed_at, ia.cancelled_at, ia.created_at, ia.updated_at
 		 FROM issue_assignments ia
 		 LEFT JOIN agents a ON a.id = ia.agent_id
@@ -183,6 +371,8 @@ func scanIssueAssignment(scanner assignmentScanner) (*IssueAssignment, error) {
 		&a.RequestFingerprint,
 		&a.Status,
 		&a.DedupeKey,
+		&a.ErrorCode,
+		&a.ErrorMessage,
 		&requestedAt,
 		&acceptedAt,
 		&completedAt,
@@ -223,6 +413,52 @@ func scanIssueAssignment(scanner assignmentScanner) (*IssueAssignment, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+type resultScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAssignmentResult(scanner resultScanner) (*AssignmentResult, error) {
+	result := &AssignmentResult{}
+	var startedAt, finishedAt string
+	if err := scanner.Scan(
+		&result.ResultID,
+		&result.AssignmentID,
+		&result.AttemptNo,
+		&result.Output,
+		&result.Status,
+		&result.Error,
+		&startedAt,
+		&finishedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
+		return nil, fmt.Errorf("scan assignment result: %w", err)
+	}
+
+	var err error
+	result.StartedAt, err = parseTime(startedAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan assignment result: %w", err)
+	}
+	result.FinishedAt, err = parseTime(finishedAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan assignment result: %w", err)
+	}
+	return result, nil
+}
+
+func requireRowsAffected(res sql.Result) error {
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check assignment rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrAssignmentStateConflict
+	}
+	return nil
 }
 
 func parseNullTime(value sql.NullString) (*time.Time, error) {

@@ -2,8 +2,10 @@ package store_test
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bzqzheng/zin/services/daemon/db"
 	"github.com/bzqzheng/zin/services/daemon/migration"
@@ -33,6 +35,173 @@ func setupStore(t *testing.T) (*store.ProjectRepository, *store.IssueRepository,
 	}
 
 	return pr, ir, ar, rr, cleanup
+}
+
+func setupAssignmentExecutionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *store.IssueRepository, *store.AgentRepository, *store.IssueAssignmentRepository, func()) {
+	t.Helper()
+	dir := t.TempDir()
+
+	database, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := migration.Run(database); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	cleanup := func() {
+		database.Close()
+	}
+	return database,
+		store.NewProjectRepository(database),
+		store.NewIssueRepository(database),
+		store.NewAgentRepository(database),
+		store.NewIssueAssignmentRepository(database),
+		cleanup
+}
+
+func createExecutionAssignment(t *testing.T, projectRepo *store.ProjectRepository, issueRepo *store.IssueRepository, agentRepo *store.AgentRepository, assignmentRepo *store.IssueAssignmentRepository) *store.IssueAssignment {
+	t.Helper()
+	project, err := projectRepo.Create("Execution", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue, err := issueRepo.Create(project.ID, "Run assignment", "", "todo", "high")
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	agent, err := agentRepo.Create("Trinity", "builder", "", "", "")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	assignment, err := assignmentRepo.Create(store.CreateIssueAssignmentInput{
+		IssueID:            issue.ID,
+		AgentID:            agent.ID,
+		RequestedBy:        "local-user",
+		SourceType:         "issue_detail",
+		ClientRequestID:    "req-" + issue.ID,
+		RequestFingerprint: "fingerprint-" + issue.ID,
+		DedupeKey:          "dedupe-" + issue.ID,
+	})
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	return assignment
+}
+
+func TestAssignmentExecutionTransitionsAreCASGuarded(t *testing.T) {
+	_, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+
+	retrieving, err := assignmentRepo.TransitionCAS(assignment.ID, "queued", "retrieving_memory")
+	if err != nil {
+		t.Fatalf("transition queued to retrieving_memory: %v", err)
+	}
+	if retrieving.Status != "retrieving_memory" {
+		t.Fatalf("expected retrieving_memory, got %#v", retrieving)
+	}
+
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "queued", "retrieving_memory"); !errors.Is(err, store.ErrAssignmentStateConflict) {
+		t.Fatalf("expected stale worker CAS conflict, got %v", err)
+	}
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "retrieving_memory", "running"); !errors.Is(err, store.ErrAssignmentInvalidTransition) {
+		t.Fatalf("expected invalid transition error, got %v", err)
+	}
+
+	ready, err := assignmentRepo.TransitionCAS(assignment.ID, "retrieving_memory", "ready")
+	if err != nil {
+		t.Fatalf("transition retrieving_memory to ready: %v", err)
+	}
+	if ready.Status != "ready" {
+		t.Fatalf("expected ready, got %#v", ready)
+	}
+	running, err := assignmentRepo.TransitionCAS(assignment.ID, "ready", "running")
+	if err != nil {
+		t.Fatalf("transition ready to running: %v", err)
+	}
+	if running.Status != "running" {
+		t.Fatalf("expected running, got %#v", running)
+	}
+}
+
+func TestAssignmentCompletionPersistsResultAtomically(t *testing.T) {
+	_, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "queued", "retrieving_memory"); err != nil {
+		t.Fatalf("transition to retrieving_memory: %v", err)
+	}
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "retrieving_memory", "ready"); err != nil {
+		t.Fatalf("transition to ready: %v", err)
+	}
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "ready", "running"); err != nil {
+		t.Fatalf("transition to running: %v", err)
+	}
+
+	startedAt := time.Date(2026, 5, 5, 20, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(2 * time.Second)
+	completed, result, err := assignmentRepo.CompleteWithResult(store.CompleteAssignmentInput{
+		AssignmentID: assignment.ID,
+		Output:       "done",
+		StartedAt:    startedAt,
+		FinishedAt:   finishedAt,
+	})
+	if err != nil {
+		t.Fatalf("complete with result: %v", err)
+	}
+	if completed.Status != "succeeded" || completed.CompletedAt == nil {
+		t.Fatalf("expected succeeded assignment with completed_at, got %#v", completed)
+	}
+	if result.AssignmentID != assignment.ID || result.AttemptNo != 1 || result.Output != "done" || result.Status != "succeeded" {
+		t.Fatalf("unexpected result row: %#v", result)
+	}
+
+	if _, _, err := assignmentRepo.CompleteWithResult(store.CompleteAssignmentInput{AssignmentID: assignment.ID, Output: "duplicate"}); !errors.Is(err, store.ErrAssignmentStateConflict) {
+		t.Fatalf("expected duplicate completion conflict, got %v", err)
+	}
+	results, err := assignmentRepo.ListResults(assignment.ID)
+	if err != nil {
+		t.Fatalf("list results: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one immutable result row, got %d", len(results))
+	}
+}
+
+func TestIssueDeleteCascadesAssignmentResults(t *testing.T) {
+	database, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "queued", "retrieving_memory"); err != nil {
+		t.Fatalf("transition to retrieving_memory: %v", err)
+	}
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "retrieving_memory", "ready"); err != nil {
+		t.Fatalf("transition to ready: %v", err)
+	}
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "ready", "running"); err != nil {
+		t.Fatalf("transition to running: %v", err)
+	}
+	if _, _, err := assignmentRepo.CompleteWithResult(store.CompleteAssignmentInput{AssignmentID: assignment.ID, Output: "done"}); err != nil {
+		t.Fatalf("complete with result: %v", err)
+	}
+	if err := issueRepo.Delete(assignment.IssueID); err != nil {
+		t.Fatalf("delete issue: %v", err)
+	}
+
+	var assignmentCount, resultCount int
+	if err := database.QueryRow("SELECT COUNT(*) FROM issue_assignments WHERE issue_id = ?", assignment.IssueID).Scan(&assignmentCount); err != nil {
+		t.Fatalf("count assignments: %v", err)
+	}
+	if err := database.QueryRow("SELECT COUNT(*) FROM assignment_results WHERE assignment_id = ?", assignment.ID).Scan(&resultCount); err != nil {
+		t.Fatalf("count assignment results: %v", err)
+	}
+	if assignmentCount != 0 || resultCount != 0 {
+		t.Fatalf("expected issue delete to cascade assignment/results, got assignments=%d results=%d", assignmentCount, resultCount)
+	}
 }
 
 func setupInteractionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *store.IssueRepository, *store.TagRepository, *store.IssueCommentRepository, *store.IssueActivityRepository, func()) {

@@ -269,7 +269,10 @@ function AssignmentItem({
             </p>
           )}
         </div>
-        {assignment.status !== 'completed' && assignment.status !== 'failed' && assignment.status !== 'cancelled' && (
+        {assignment.status !== 'succeeded' &&
+          assignment.status !== 'failed' &&
+          assignment.status !== 'cancelled' &&
+          assignment.status !== 'retrieval_failed' && (
           <button
             type="button"
             disabled={disabled}

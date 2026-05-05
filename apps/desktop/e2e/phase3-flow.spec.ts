@@ -133,6 +133,8 @@ async function installMockDaemon(page: Page) {
             client_request_id: body.client_request_id,
             status: 'queued',
             dedupe_key: `${issueAlpha.id}:${body.source_type}:${body.source_id}:${body.agent_id}`,
+            error_code: '',
+            error_message: '',
             requested_at: now,
             accepted_at: null,
             completed_at: null,

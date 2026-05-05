@@ -49,9 +49,23 @@ type cancelAssignmentRequest struct {
 	Reason string `json:"reason"`
 }
 
+type transitionAssignmentRequest struct {
+	FromStatus string `json:"from_status"`
+	ToStatus   string `json:"to_status"`
+}
+
+type completeAssignmentRequest struct {
+	Output string `json:"output"`
+}
+
 type assignmentResponse struct {
 	Assignment       *store.IssueAssignment `json:"assignment"`
 	IdempotentReplay bool                   `json:"idempotent_replay,omitempty"`
+}
+
+type assignmentResultResponse struct {
+	Assignment *store.IssueAssignment  `json:"assignment"`
+	Result     *store.AssignmentResult `json:"result"`
 }
 
 type assignmentListResponse struct {
@@ -257,7 +271,7 @@ func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		if current == nil {
 			return errAssignmentNotFound
 		}
-		if current.Status == "completed" || current.Status == "failed" || current.Status == "cancelled" {
+		if current.Status == "succeeded" || current.Status == "failed" || current.Status == "cancelled" || current.Status == "retrieval_failed" {
 			return errAssignmentTerminal
 		}
 		assignment, err = repos.Assignments.Cancel(id)
@@ -293,6 +307,87 @@ func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
+func (h *AssignmentHandler) Transition(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	id := r.PathValue("id")
+	var req transitionAssignmentRequest
+	if err := response.DecodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
+	}
+	req.FromStatus = strings.TrimSpace(req.FromStatus)
+	req.ToStatus = strings.TrimSpace(req.ToStatus)
+	if req.FromStatus == "" || req.ToStatus == "" {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "from_status and to_status are required", "")
+		return
+	}
+
+	var assignment *store.IssueAssignment
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		current, err := repos.Assignments.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errAssignmentNotFound
+		}
+		assignment, err = repos.Assignments.TransitionCAS(id, req.FromStatus, req.ToStatus)
+		return err
+	}); err != nil {
+		writeAssignmentExecutionError(w, err, "failed to transition assignment")
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
+func (h *AssignmentHandler) Complete(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	id := r.PathValue("id")
+	var req completeAssignmentRequest
+	if err := response.DecodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
+	}
+
+	var payload assignmentResultResponse
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		current, err := repos.Assignments.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errAssignmentNotFound
+		}
+		assignment, result, err := repos.Assignments.CompleteWithResult(store.CompleteAssignmentInput{
+			AssignmentID: id,
+			Output:       req.Output,
+		})
+		if err != nil {
+			return err
+		}
+		payload.Assignment = assignment
+		payload.Result = result
+		return nil
+	}); err != nil {
+		writeAssignmentExecutionError(w, err, "failed to complete assignment")
+		return
+	}
+	response.JSON(w, http.StatusOK, payload)
+}
+
+func writeAssignmentExecutionError(w http.ResponseWriter, err error, message string) {
+	switch {
+	case errors.Is(err, errAssignmentNotFound):
+		response.Error(w, http.StatusNotFound, "ASSIGNMENT_NOT_FOUND", "assignment not found", "")
+	case errors.Is(err, store.ErrAssignmentInvalidTransition):
+		response.Error(w, http.StatusBadRequest, "ASSIGNMENT_INVALID_TRANSITION", "assignment transition is not allowed", "")
+	case errors.Is(err, store.ErrAssignmentStateConflict):
+		response.Error(w, http.StatusConflict, "ASSIGNMENT_STATE_CONFLICT", "assignment state changed before this operation could apply", "")
+	default:
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", message, err.Error())
+	}
 }
 
 var (
