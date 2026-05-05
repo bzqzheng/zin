@@ -394,6 +394,78 @@ func TestAssignmentExecutionAPIUsesCASAndPersistsResult(t *testing.T) {
 	assertStatus(t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/complete", `{"output":"again"}`, http.StatusConflict)
 }
 
+func TestAssignmentRetrievalFailureAPIShapeAndDegradedResult(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Retrieval observability", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Retrieve memory"})
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtime := runtimeByKind(t, runtimes.Runtimes, "codex")
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+runtime.ID+`"}`, http.StatusCreated)
+
+	type assignmentPayload struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}
+	createBody := `{"agent_id":"` + agent.ID + `","source_type":"issue_detail","client_request_id":"retrieval-1"}`
+	created := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", createBody, http.StatusCreated)
+	creationFailed := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/retrieval/creation-failure", `{"reason":"retriever_boot_failed"}`, http.StatusOK)
+	if creationFailed.Assignment.Status != "queued" || creationFailed.Assignment.RetrievalFailureReason != "retriever_boot_failed" {
+		t.Fatalf("expected queued creation retrieval failure shape, got %#v", creationFailed.Assignment)
+	}
+
+	requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/retrieval/start", `{}`, http.StatusOK)
+	failed := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/retrieval/failure", `{"reason":"retriever_timeout"}`, http.StatusOK)
+	if failed.Assignment.Status != "retrieval_failed" || failed.Assignment.RetrievalFailureReason != "retriever_timeout" || failed.Assignment.RetrievalPolicy != "fail_fast" {
+		t.Fatalf("expected fail-fast retrieval_failed response, got %#v", failed.Assignment)
+	}
+}
+
+func TestAssignmentContinueWithoutMemoryAndInfluenceDegradationAPI(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Retrieval continue", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Continue without memory"})
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtime := runtimeByKind(t, runtimes.Runtimes, "codex")
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+runtime.ID+`"}`, http.StatusCreated)
+
+	type assignmentPayload struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}
+	created := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"continue-1"}`, http.StatusCreated)
+	requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/retrieval/start", `{}`, http.StatusOK)
+	assertStatus(t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/retrieval/failure", `{"continue_on_failure":true}`, http.StatusBadRequest)
+	ready := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/retrieval/failure", `{"reason":"retriever_timeout","continue_on_failure":true,"audit_metadata_json":"{\"source\":\"AssignmentDispatched\"}"}`, http.StatusOK)
+	if ready.Assignment.Status != "ready" || ready.Assignment.RetrievalPolicy != "continue_without_memory" {
+		t.Fatalf("expected ready continue-without-memory assignment, got %#v", ready.Assignment)
+	}
+	requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"ready","to_status":"running"}`, http.StatusOK)
+
+	completed := requestJSON[struct {
+		Assignment store.IssueAssignment  `json:"assignment"`
+		Result     store.AssignmentResult `json:"result"`
+	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/complete", `{"output":"finished","influence_events":[{"influence_type":"","memory_id":"memory-1"}]}`, http.StatusOK)
+	if completed.Assignment.Status != "succeeded" || !completed.Result.ObservabilityDegraded || completed.Result.ObservabilityDegradedReason != "influence_logging_failed" {
+		t.Fatalf("expected succeeded result with degraded observability, got %#v", completed)
+	}
+}
+
 func TestRuntimeDiscoveryContracts(t *testing.T) {
 	router, _, _, cleanup := setupRouter(t)
 	defer cleanup()

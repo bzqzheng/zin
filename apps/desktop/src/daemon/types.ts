@@ -80,6 +80,10 @@ export interface IssueAssignment {
   dedupe_key: string
   error_code: string
   error_message: string
+  retrieval_status: string
+  retrieval_failure_reason: string
+  retrieval_policy: string
+  retrieval_audit_metadata: string
   requested_at: string
   accepted_at: string | null
   completed_at: string | null

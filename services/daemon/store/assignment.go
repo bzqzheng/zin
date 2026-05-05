@@ -2,8 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,9 +34,33 @@ type CompleteAssignmentInput struct {
 	FinishedAt   time.Time
 }
 
+type RetrievalOutcomeInput struct {
+	AssignmentID      string
+	FailureReason     string
+	Policy            string
+	ContinueOnFailure bool
+	AuditMetadataJSON string
+	MemoryIDs         []string
+}
+
+type MemoryInfluenceEventInput struct {
+	AssignmentID  string
+	ResultID      string
+	MemoryID      string
+	InfluenceType string
+	ReasonCode    string
+	MetadataJSON  string
+}
+
+type MemoryInfluenceLogger interface {
+	LogMemoryInfluence(MemoryInfluenceEventInput) (*MemoryInfluenceEvent, error)
+}
+
 var (
 	ErrAssignmentStateConflict     = errors.New("ASSIGNMENT_STATE_CONFLICT")
 	ErrAssignmentInvalidTransition = errors.New("ASSIGNMENT_INVALID_TRANSITION")
+	ErrRetrievalAuditRequired      = errors.New("RETRIEVAL_AUDIT_REQUIRED")
+	ErrMemoryInfluenceInvalid      = errors.New("MEMORY_INFLUENCE_INVALID")
 )
 
 func NewIssueAssignmentRepository(db *sql.DB) *IssueAssignmentRepository {
@@ -109,6 +135,7 @@ func (r *IssueAssignmentRepository) ListByIssue(issueID string) ([]*IssueAssignm
 		        COALESCE(rt.display_name, ''), COALESCE(rt.health_status, ''), ia.requested_by, ia.source_type, ia.source_id,
 		        ia.client_request_id, ia.request_fingerprint, ia.status, ia.dedupe_key,
 		        ia.error_code, ia.error_message,
+		        ia.retrieval_status, ia.retrieval_failure_reason, ia.retrieval_policy, ia.retrieval_audit_metadata,
 		        ia.requested_at, ia.accepted_at, ia.completed_at, ia.failed_at, ia.cancelled_at, ia.created_at, ia.updated_at
 		 FROM issue_assignments ia
 		 LEFT JOIN agents a ON a.id = ia.agent_id
@@ -178,6 +205,150 @@ func (r *IssueAssignmentRepository) TransitionCAS(id, fromStatus, toStatus strin
 	return r.GetByID(id)
 }
 
+func (r *IssueAssignmentRepository) RecordRetrievalCreationFailure(id, reason string) (*IssueAssignment, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := r.q.Exec(
+		`UPDATE issue_assignments
+		 SET status = 'queued',
+		     error_code = 'retrieval_failed',
+		     error_message = ?,
+		     retrieval_status = 'failed',
+		     retrieval_failure_reason = ?,
+		     retrieval_policy = 'fail_fast',
+		     retrieval_audit_metadata = '',
+		     updated_at = ?
+		 WHERE id = ? AND status = 'queued'`,
+		reason,
+		reason,
+		now,
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("record retrieval creation failure: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, err
+	}
+	return r.GetByID(id)
+}
+
+func (r *IssueAssignmentRepository) StartRetrieval(id string) (*IssueAssignment, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := r.q.Exec(
+		`UPDATE issue_assignments
+		 SET status = 'retrieving_memory',
+		     error_code = '',
+		     error_message = '',
+		     retrieval_status = 'retrieving',
+		     retrieval_failure_reason = '',
+		     retrieval_policy = 'fail_fast',
+		     retrieval_audit_metadata = '',
+		     updated_at = ?
+		 WHERE id = ? AND status = 'queued'`,
+		now,
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("start assignment retrieval: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, err
+	}
+	return r.GetByID(id)
+}
+
+func (r *IssueAssignmentRepository) CompleteRetrievalEmpty(id string) (*IssueAssignment, error) {
+	return r.completeRetrievalReady(id, "empty", "", "fail_fast", "")
+}
+
+func (r *IssueAssignmentRepository) CompleteRetrievalInjected(id string, memoryIDs []string) (*IssueAssignment, error) {
+	metadata, err := json.Marshal(map[string][]string{"memory_ids": memoryIDs})
+	if err != nil {
+		return nil, fmt.Errorf("marshal retrieval metadata: %w", err)
+	}
+	return r.completeRetrievalReady(id, "injected", "", "fail_fast", string(metadata))
+}
+
+func (r *IssueAssignmentRepository) CompleteRetrievalFailure(input RetrievalOutcomeInput) (*IssueAssignment, error) {
+	reason := strings.TrimSpace(input.FailureReason)
+	policy := strings.TrimSpace(input.Policy)
+	if policy == "" {
+		policy = "fail_fast"
+	}
+	if !input.ContinueOnFailure {
+		now := time.Now().UTC().Format(time.RFC3339)
+		res, err := r.q.Exec(
+			`UPDATE issue_assignments
+			 SET status = 'retrieval_failed',
+			     failed_at = ?,
+			     error_code = 'retrieval_failed',
+			     error_message = ?,
+			     retrieval_status = 'failed',
+			     retrieval_failure_reason = ?,
+			     retrieval_policy = ?,
+			     retrieval_audit_metadata = '',
+			     updated_at = ?
+			 WHERE id = ? AND status = 'retrieving_memory'`,
+			now,
+			reason,
+			reason,
+			policy,
+			now,
+			input.AssignmentID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("complete retrieval fail-fast: %w", err)
+		}
+		if err := requireRowsAffected(res); err != nil {
+			return nil, err
+		}
+		return r.GetByID(input.AssignmentID)
+	}
+
+	auditMetadata := strings.TrimSpace(input.AuditMetadataJSON)
+	if reason == "" || auditMetadata == "" || !json.Valid([]byte(auditMetadata)) {
+		return nil, ErrRetrievalAuditRequired
+	}
+	if _, err := r.LogMemoryInfluence(MemoryInfluenceEventInput{
+		AssignmentID:  input.AssignmentID,
+		InfluenceType: "retrieval_failed",
+		ReasonCode:    reason,
+		MetadataJSON:  auditMetadata,
+	}); err != nil {
+		return nil, err
+	}
+	return r.completeRetrievalReady(input.AssignmentID, "failed", reason, "continue_without_memory", auditMetadata)
+}
+
+func (r *IssueAssignmentRepository) completeRetrievalReady(id, retrievalStatus, reason, policy, metadata string) (*IssueAssignment, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := r.q.Exec(
+		`UPDATE issue_assignments
+		 SET status = 'ready',
+		     error_code = '',
+		     error_message = '',
+		     retrieval_status = ?,
+		     retrieval_failure_reason = ?,
+		     retrieval_policy = ?,
+		     retrieval_audit_metadata = ?,
+		     updated_at = ?
+		 WHERE id = ? AND status = 'retrieving_memory'`,
+		retrievalStatus,
+		reason,
+		policy,
+		metadata,
+		now,
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("complete assignment retrieval: %w", err)
+	}
+	if err := requireRowsAffected(res); err != nil {
+		return nil, err
+	}
+	return r.GetByID(id)
+}
+
 func validAssignmentTransition(fromStatus, toStatus string) bool {
 	switch fromStatus {
 	case "queued":
@@ -237,8 +408,8 @@ func (r *IssueAssignmentRepository) CompleteWithResult(input CompleteAssignmentI
 
 	res, err := r.q.Exec(
 		`INSERT INTO assignment_results
-		 (result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at)
-		 SELECT ?, ?, ?, ?, 'succeeded', '', ?, ?
+		 (result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, started_at, finished_at)
+		 SELECT ?, ?, ?, ?, 'succeeded', '', 0, '', ?, ?
 		 WHERE EXISTS (SELECT 1 FROM issue_assignments WHERE id = ? AND status = 'running')`,
 		resultID.String(),
 		input.AssignmentID,
@@ -281,9 +452,45 @@ func (r *IssueAssignmentRepository) CompleteWithResult(input CompleteAssignmentI
 	return assignment, result, nil
 }
 
+func (r *IssueAssignmentRepository) CompleteWithResultAndInfluence(input CompleteAssignmentInput, events []MemoryInfluenceEventInput, logger MemoryInfluenceLogger) (*IssueAssignment, *AssignmentResult, error) {
+	assignment, result, err := r.CompleteWithResult(input)
+	if err != nil {
+		return nil, nil, err
+	}
+	if logger == nil {
+		logger = r
+	}
+	for _, event := range events {
+		event.AssignmentID = input.AssignmentID
+		event.ResultID = result.ResultID
+		if _, err := logger.LogMemoryInfluence(event); err != nil {
+			degraded, degradeErr := r.MarkResultObservabilityDegraded(result.ResultID, "influence_logging_failed")
+			if degradeErr != nil {
+				return assignment, result, fmt.Errorf("mark observability degraded after influence log failure: %w", degradeErr)
+			}
+			return assignment, degraded, nil
+		}
+	}
+	return assignment, result, nil
+}
+
+func (r *IssueAssignmentRepository) MarkResultObservabilityDegraded(resultID, reason string) (*AssignmentResult, error) {
+	_, err := r.q.Exec(
+		`UPDATE assignment_results
+		 SET observability_degraded = 1, observability_degraded_reason = ?
+		 WHERE result_id = ?`,
+		reason,
+		resultID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("mark result observability degraded: %w", err)
+	}
+	return r.GetResultByID(resultID)
+}
+
 func (r *IssueAssignmentRepository) GetResultByID(id string) (*AssignmentResult, error) {
 	row := r.q.QueryRow(
-		`SELECT result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at
+		`SELECT result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, started_at, finished_at
 		 FROM assignment_results
 		 WHERE result_id = ?`,
 		id,
@@ -300,7 +507,7 @@ func (r *IssueAssignmentRepository) GetResultByID(id string) (*AssignmentResult,
 
 func (r *IssueAssignmentRepository) ListResults(assignmentID string) ([]*AssignmentResult, error) {
 	rows, err := r.q.Query(
-		`SELECT result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at
+		`SELECT result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, started_at, finished_at
 		 FROM assignment_results
 		 WHERE assignment_id = ?
 		 ORDER BY attempt_no ASC`,
@@ -325,12 +532,88 @@ func (r *IssueAssignmentRepository) ListResults(assignmentID string) ([]*Assignm
 	return results, nil
 }
 
+func (r *IssueAssignmentRepository) LogMemoryInfluence(input MemoryInfluenceEventInput) (*MemoryInfluenceEvent, error) {
+	if strings.TrimSpace(input.InfluenceType) == "" {
+		return nil, ErrMemoryInfluenceInvalid
+	}
+	if input.InfluenceType == "retrieval_failed" && strings.TrimSpace(input.ReasonCode) == "" {
+		return nil, ErrMemoryInfluenceInvalid
+	}
+	metadata := strings.TrimSpace(input.MetadataJSON)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	if !json.Valid([]byte(metadata)) {
+		return nil, ErrMemoryInfluenceInvalid
+	}
+
+	uid, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate memory influence uuid: %w", err)
+	}
+	appliedAt := time.Now().UTC()
+	_, err = r.q.Exec(
+		`INSERT INTO memory_influence_events
+		 (id, assignment_id, result_id, memory_id, influence_type, reason_code, metadata_json, applied_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uid.String(),
+		input.AssignmentID,
+		nullString(input.ResultID),
+		input.MemoryID,
+		input.InfluenceType,
+		input.ReasonCode,
+		metadata,
+		appliedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert memory influence event: %w", err)
+	}
+	return &MemoryInfluenceEvent{
+		ID:            uid.String(),
+		AssignmentID:  input.AssignmentID,
+		ResultID:      input.ResultID,
+		MemoryID:      input.MemoryID,
+		InfluenceType: input.InfluenceType,
+		ReasonCode:    input.ReasonCode,
+		MetadataJSON:  metadata,
+		AppliedAt:     appliedAt,
+	}, nil
+}
+
+func (r *IssueAssignmentRepository) ListMemoryInfluenceEvents(assignmentID string) ([]*MemoryInfluenceEvent, error) {
+	rows, err := r.q.Query(
+		`SELECT id, assignment_id, COALESCE(result_id, ''), memory_id, influence_type, reason_code, metadata_json, applied_at
+		 FROM memory_influence_events
+		 WHERE assignment_id = ?
+		 ORDER BY applied_at ASC, id ASC`,
+		assignmentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list memory influence events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*MemoryInfluenceEvent
+	for rows.Next() {
+		event, err := scanMemoryInfluenceEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memory influence events: %w", err)
+	}
+	return events, nil
+}
+
 func (r *IssueAssignmentRepository) get(where string, arg string) (*IssueAssignment, error) {
 	row := r.q.QueryRow(
 		`SELECT ia.id, ia.issue_id, COALESCE(ia.agent_id, ''), COALESCE(a.name, ''), COALESCE(a.runtime_id, ''),
 		        COALESCE(rt.display_name, ''), COALESCE(rt.health_status, ''), ia.requested_by, ia.source_type, ia.source_id,
 		        ia.client_request_id, ia.request_fingerprint, ia.status, ia.dedupe_key,
 		        ia.error_code, ia.error_message,
+		        ia.retrieval_status, ia.retrieval_failure_reason, ia.retrieval_policy, ia.retrieval_audit_metadata,
 		        ia.requested_at, ia.accepted_at, ia.completed_at, ia.failed_at, ia.cancelled_at, ia.created_at, ia.updated_at
 		 FROM issue_assignments ia
 		 LEFT JOIN agents a ON a.id = ia.agent_id
@@ -373,6 +656,10 @@ func scanIssueAssignment(scanner assignmentScanner) (*IssueAssignment, error) {
 		&a.DedupeKey,
 		&a.ErrorCode,
 		&a.ErrorMessage,
+		&a.RetrievalStatus,
+		&a.RetrievalFailureReason,
+		&a.RetrievalPolicy,
+		&a.RetrievalAuditMetadata,
 		&requestedAt,
 		&acceptedAt,
 		&completedAt,
@@ -422,6 +709,7 @@ type resultScanner interface {
 func scanAssignmentResult(scanner resultScanner) (*AssignmentResult, error) {
 	result := &AssignmentResult{}
 	var startedAt, finishedAt string
+	var observabilityDegraded int
 	if err := scanner.Scan(
 		&result.ResultID,
 		&result.AssignmentID,
@@ -429,6 +717,8 @@ func scanAssignmentResult(scanner resultScanner) (*AssignmentResult, error) {
 		&result.Output,
 		&result.Status,
 		&result.Error,
+		&observabilityDegraded,
+		&result.ObservabilityDegradedReason,
 		&startedAt,
 		&finishedAt,
 	); err != nil {
@@ -447,7 +737,38 @@ func scanAssignmentResult(scanner resultScanner) (*AssignmentResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan assignment result: %w", err)
 	}
+	result.ObservabilityDegraded = observabilityDegraded != 0
 	return result, nil
+}
+
+func scanMemoryInfluenceEvent(scanner resultScanner) (*MemoryInfluenceEvent, error) {
+	event := &MemoryInfluenceEvent{}
+	var appliedAt string
+	if err := scanner.Scan(
+		&event.ID,
+		&event.AssignmentID,
+		&event.ResultID,
+		&event.MemoryID,
+		&event.InfluenceType,
+		&event.ReasonCode,
+		&event.MetadataJSON,
+		&appliedAt,
+	); err != nil {
+		return nil, fmt.Errorf("scan memory influence event: %w", err)
+	}
+	var err error
+	event.AppliedAt, err = parseTime(appliedAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan memory influence event: %w", err)
+	}
+	return event, nil
+}
+
+func nullString(value string) sql.NullString {
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
 }
 
 func requireRowsAffected(res sql.Result) error {
