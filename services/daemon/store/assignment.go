@@ -399,8 +399,8 @@ func (r *IssueAssignmentRepository) CompleteWithResult(input CompleteAssignmentI
 
 	res, err := r.q.Exec(
 		`INSERT INTO assignment_results
-		 (result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, started_at, finished_at)
-		 SELECT ?, ?, ?, ?, 'succeeded', '', 0, '', ?, ?
+		 (result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, observability_degraded_detail, started_at, finished_at)
+		 SELECT ?, ?, ?, ?, 'succeeded', '', 0, '', '', ?, ?
 		 WHERE EXISTS (SELECT 1 FROM issue_assignments WHERE id = ? AND status = 'running')`,
 		resultID.String(),
 		input.AssignmentID,
@@ -455,7 +455,7 @@ func (r *IssueAssignmentRepository) CompleteWithResultAndInfluence(input Complet
 		event.AssignmentID = input.AssignmentID
 		event.ResultID = result.ResultID
 		if _, err := logger.LogMemoryInfluence(event); err != nil {
-			degraded, degradeErr := r.MarkResultObservabilityDegraded(result.ResultID, "influence_logging_failed")
+			degraded, degradeErr := r.MarkResultObservabilityDegraded(result.ResultID, "influence_logging_failed", err.Error())
 			if degradeErr != nil {
 				return assignment, result, fmt.Errorf("mark observability degraded after influence log failure: %w", degradeErr)
 			}
@@ -465,12 +465,13 @@ func (r *IssueAssignmentRepository) CompleteWithResultAndInfluence(input Complet
 	return assignment, result, nil
 }
 
-func (r *IssueAssignmentRepository) MarkResultObservabilityDegraded(resultID, reason string) (*AssignmentResult, error) {
+func (r *IssueAssignmentRepository) MarkResultObservabilityDegraded(resultID, reason, detail string) (*AssignmentResult, error) {
 	_, err := r.q.Exec(
 		`UPDATE assignment_results
-		 SET observability_degraded = 1, observability_degraded_reason = ?
+		 SET observability_degraded = 1, observability_degraded_reason = ?, observability_degraded_detail = ?
 		 WHERE result_id = ?`,
 		reason,
+		detail,
 		resultID,
 	)
 	if err != nil {
@@ -481,7 +482,7 @@ func (r *IssueAssignmentRepository) MarkResultObservabilityDegraded(resultID, re
 
 func (r *IssueAssignmentRepository) GetResultByID(id string) (*AssignmentResult, error) {
 	row := r.q.QueryRow(
-		`SELECT result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, started_at, finished_at
+		`SELECT result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, observability_degraded_detail, started_at, finished_at
 		 FROM assignment_results
 		 WHERE result_id = ?`,
 		id,
@@ -498,7 +499,7 @@ func (r *IssueAssignmentRepository) GetResultByID(id string) (*AssignmentResult,
 
 func (r *IssueAssignmentRepository) ListResults(assignmentID string) ([]*AssignmentResult, error) {
 	rows, err := r.q.Query(
-		`SELECT result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, started_at, finished_at
+		`SELECT result_id, assignment_id, attempt_no, output, status, error, observability_degraded, observability_degraded_reason, observability_degraded_detail, started_at, finished_at
 		 FROM assignment_results
 		 WHERE assignment_id = ?
 		 ORDER BY attempt_no ASC`,
@@ -710,6 +711,7 @@ func scanAssignmentResult(scanner resultScanner) (*AssignmentResult, error) {
 		&result.Error,
 		&observabilityDegraded,
 		&result.ObservabilityDegradedReason,
+		&result.ObservabilityDegradedDetail,
 		&startedAt,
 		&finishedAt,
 	); err != nil {

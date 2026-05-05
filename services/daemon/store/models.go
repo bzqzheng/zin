@@ -124,6 +124,7 @@ type AssignmentResult struct {
 	Error                       string    `json:"error"`
 	ObservabilityDegraded       bool      `json:"observability_degraded"`
 	ObservabilityDegradedReason string    `json:"observability_degraded_reason"`
+	ObservabilityDegradedDetail string    `json:"observability_degraded_detail"`
 	StartedAt                   time.Time `json:"started_at"`
 	FinishedAt                  time.Time `json:"finished_at"`
 }

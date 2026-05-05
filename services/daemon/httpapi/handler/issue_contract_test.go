@@ -461,7 +461,10 @@ func TestAssignmentContinueWithoutMemoryAndInfluenceDegradationAPI(t *testing.T)
 		Assignment store.IssueAssignment  `json:"assignment"`
 		Result     store.AssignmentResult `json:"result"`
 	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/complete", `{"output":"finished","influence_events":[{"influence_type":"","memory_id":"memory-1"}]}`, http.StatusOK)
-	if completed.Assignment.Status != "succeeded" || !completed.Result.ObservabilityDegraded || completed.Result.ObservabilityDegradedReason != "influence_logging_failed" {
+	if completed.Assignment.Status != "succeeded" ||
+		!completed.Result.ObservabilityDegraded ||
+		completed.Result.ObservabilityDegradedReason != "influence_logging_failed" ||
+		completed.Result.ObservabilityDegradedDetail == "" {
 		t.Fatalf("expected succeeded result with degraded observability, got %#v", completed)
 	}
 }

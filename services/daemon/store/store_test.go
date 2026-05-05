@@ -313,7 +313,7 @@ func TestInfluenceLoggingFailureDoesNotBlockResultPersistence(t *testing.T) {
 	if completed.Status != "succeeded" {
 		t.Fatalf("expected succeeded assignment despite influence log failure, got %#v", completed)
 	}
-	if !result.ObservabilityDegraded || result.ObservabilityDegradedReason != "influence_logging_failed" {
+	if !result.ObservabilityDegraded || result.ObservabilityDegradedReason != "influence_logging_failed" || result.ObservabilityDegradedDetail != "influence log failed" {
 		t.Fatalf("expected degraded observability flag, got %#v", result)
 	}
 	results, err := assignmentRepo.ListResults(assignment.ID)
