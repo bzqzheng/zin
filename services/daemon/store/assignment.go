@@ -40,7 +40,6 @@ type RetrievalOutcomeInput struct {
 	Policy            string
 	ContinueOnFailure bool
 	AuditMetadataJSON string
-	MemoryIDs         []string
 }
 
 type MemoryInfluenceEventInput struct {
@@ -259,14 +258,6 @@ func (r *IssueAssignmentRepository) StartRetrieval(id string) (*IssueAssignment,
 
 func (r *IssueAssignmentRepository) CompleteRetrievalEmpty(id string) (*IssueAssignment, error) {
 	return r.completeRetrievalReady(id, "empty", "", "fail_fast", "")
-}
-
-func (r *IssueAssignmentRepository) CompleteRetrievalInjected(id string, memoryIDs []string) (*IssueAssignment, error) {
-	metadata, err := json.Marshal(map[string][]string{"memory_ids": memoryIDs})
-	if err != nil {
-		return nil, fmt.Errorf("marshal retrieval metadata: %w", err)
-	}
-	return r.completeRetrievalReady(id, "injected", "", "fail_fast", string(metadata))
 }
 
 func (r *IssueAssignmentRepository) CompleteRetrievalFailure(input RetrievalOutcomeInput) (*IssueAssignment, error) {
