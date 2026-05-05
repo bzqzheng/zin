@@ -204,6 +204,133 @@ func TestIssueDeleteCascadesAssignmentResults(t *testing.T) {
 	}
 }
 
+func TestRetrievalFailureFailFastDefault(t *testing.T) {
+	_, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+	if _, err := assignmentRepo.StartRetrieval(assignment.ID); err != nil {
+		t.Fatalf("start retrieval: %v", err)
+	}
+	failed, err := assignmentRepo.CompleteRetrievalFailure(store.RetrievalOutcomeInput{
+		AssignmentID:  assignment.ID,
+		FailureReason: "retriever_unavailable",
+	})
+	if err != nil {
+		t.Fatalf("complete retrieval failure: %v", err)
+	}
+	if failed.Status != "retrieval_failed" || failed.RetrievalFailureReason != "retriever_unavailable" || failed.RetrievalPolicy != "fail_fast" {
+		t.Fatalf("expected fail-fast retrieval_failed state, got %#v", failed)
+	}
+	events, err := assignmentRepo.ListMemoryInfluenceEvents(assignment.ID)
+	if err != nil {
+		t.Fatalf("list influence events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("fail-fast retrieval failure should emit no memory event, got %#v", events)
+	}
+}
+
+func TestRetrievalCreationFailureLeavesQueuedWithoutMemoryEvent(t *testing.T) {
+	_, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+	queued, err := assignmentRepo.RecordRetrievalCreationFailure(assignment.ID, "retriever_boot_failed")
+	if err != nil {
+		t.Fatalf("record creation retrieval failure: %v", err)
+	}
+	if queued.Status != "queued" || queued.ErrorCode != "retrieval_failed" || queued.RetrievalStatus != "failed" {
+		t.Fatalf("expected queued retriable retrieval failure, got %#v", queued)
+	}
+	events, err := assignmentRepo.ListMemoryInfluenceEvents(assignment.ID)
+	if err != nil {
+		t.Fatalf("list influence events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("creation retrieval failure should emit no memory event, got %#v", events)
+	}
+}
+
+func TestContinueWithoutMemoryRequiresRetrievalFailedAudit(t *testing.T) {
+	_, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+	if _, err := assignmentRepo.StartRetrieval(assignment.ID); err != nil {
+		t.Fatalf("start retrieval: %v", err)
+	}
+	if _, err := assignmentRepo.CompleteRetrievalFailure(store.RetrievalOutcomeInput{
+		AssignmentID:      assignment.ID,
+		ContinueOnFailure: true,
+	}); !errors.Is(err, store.ErrRetrievalAuditRequired) {
+		t.Fatalf("expected audit-required error, got %v", err)
+	}
+	ready, err := assignmentRepo.CompleteRetrievalFailure(store.RetrievalOutcomeInput{
+		AssignmentID:      assignment.ID,
+		FailureReason:     "retriever_timeout",
+		ContinueOnFailure: true,
+		AuditMetadataJSON: `{"source":"AssignmentDispatched"}`,
+	})
+	if err != nil {
+		t.Fatalf("continue without memory with audit: %v", err)
+	}
+	if ready.Status != "ready" || ready.RetrievalStatus != "failed" || ready.RetrievalFailureReason != "retriever_timeout" {
+		t.Fatalf("expected ready assignment with retrieval_failed audit metadata, got %#v", ready)
+	}
+	events, err := assignmentRepo.ListMemoryInfluenceEvents(assignment.ID)
+	if err != nil {
+		t.Fatalf("list influence events: %v", err)
+	}
+	if len(events) != 1 || events[0].InfluenceType != "retrieval_failed" || events[0].ReasonCode != "retriever_timeout" {
+		t.Fatalf("expected retrieval_failed influence event, got %#v", events)
+	}
+}
+
+func TestInfluenceLoggingFailureDoesNotBlockResultPersistence(t *testing.T) {
+	_, projectRepo, issueRepo, agentRepo, assignmentRepo, cleanup := setupAssignmentExecutionStore(t)
+	defer cleanup()
+
+	assignment := createExecutionAssignment(t, projectRepo, issueRepo, agentRepo, assignmentRepo)
+	if _, err := assignmentRepo.StartRetrieval(assignment.ID); err != nil {
+		t.Fatalf("start retrieval: %v", err)
+	}
+	if _, err := assignmentRepo.CompleteRetrievalEmpty(assignment.ID); err != nil {
+		t.Fatalf("complete empty retrieval: %v", err)
+	}
+	if _, err := assignmentRepo.TransitionCAS(assignment.ID, "ready", "running"); err != nil {
+		t.Fatalf("transition to running: %v", err)
+	}
+
+	completed, result, err := assignmentRepo.CompleteWithResultAndInfluence(
+		store.CompleteAssignmentInput{AssignmentID: assignment.ID, Output: "finished"},
+		[]store.MemoryInfluenceEventInput{{InfluenceType: "memory_applied", MemoryID: "memory-1"}},
+		failingInfluenceLogger{},
+	)
+	if err != nil {
+		t.Fatalf("complete with failing influence logger: %v", err)
+	}
+	if completed.Status != "succeeded" {
+		t.Fatalf("expected succeeded assignment despite influence log failure, got %#v", completed)
+	}
+	if !result.ObservabilityDegraded || result.ObservabilityDegradedReason != "influence_logging_failed" {
+		t.Fatalf("expected degraded observability flag, got %#v", result)
+	}
+	results, err := assignmentRepo.ListResults(assignment.ID)
+	if err != nil {
+		t.Fatalf("list results: %v", err)
+	}
+	if len(results) != 1 || results[0].Output != "finished" {
+		t.Fatalf("expected persisted assignment result, got %#v", results)
+	}
+}
+
+type failingInfluenceLogger struct{}
+
+func (failingInfluenceLogger) LogMemoryInfluence(store.MemoryInfluenceEventInput) (*store.MemoryInfluenceEvent, error) {
+	return nil, errors.New("influence log failed")
+}
+
 func setupInteractionStore(t *testing.T) (*sql.DB, *store.ProjectRepository, *store.IssueRepository, *store.TagRepository, *store.IssueCommentRepository, *store.IssueActivityRepository, func()) {
 	t.Helper()
 	dir := t.TempDir()

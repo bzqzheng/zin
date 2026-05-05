@@ -55,7 +55,15 @@ type transitionAssignmentRequest struct {
 }
 
 type completeAssignmentRequest struct {
-	Output string `json:"output"`
+	Output          string                            `json:"output"`
+	InfluenceEvents []store.MemoryInfluenceEventInput `json:"influence_events"`
+}
+
+type retrievalFailureRequest struct {
+	Reason            string `json:"reason"`
+	Policy            string `json:"policy"`
+	ContinueOnFailure bool   `json:"continue_on_failure"`
+	AuditMetadataJSON string `json:"audit_metadata_json"`
 }
 
 type assignmentResponse struct {
@@ -342,6 +350,104 @@ func (h *AssignmentHandler) Transition(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
 }
 
+func (h *AssignmentHandler) RecordRetrievalCreationFailure(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	id := r.PathValue("id")
+	var req retrievalFailureRequest
+	if err := response.DecodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
+	}
+	var assignment *store.IssueAssignment
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		current, err := repos.Assignments.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errAssignmentNotFound
+		}
+		assignment, err = repos.Assignments.RecordRetrievalCreationFailure(id, strings.TrimSpace(req.Reason))
+		return err
+	}); err != nil {
+		writeAssignmentExecutionError(w, err, "failed to record retrieval creation failure")
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
+func (h *AssignmentHandler) StartRetrieval(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var assignment *store.IssueAssignment
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		current, err := repos.Assignments.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errAssignmentNotFound
+		}
+		assignment, err = repos.Assignments.StartRetrieval(id)
+		return err
+	}); err != nil {
+		writeAssignmentExecutionError(w, err, "failed to start retrieval")
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
+func (h *AssignmentHandler) CompleteRetrievalEmpty(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var assignment *store.IssueAssignment
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		current, err := repos.Assignments.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errAssignmentNotFound
+		}
+		assignment, err = repos.Assignments.CompleteRetrievalEmpty(id)
+		return err
+	}); err != nil {
+		writeAssignmentExecutionError(w, err, "failed to complete empty retrieval")
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
+func (h *AssignmentHandler) CompleteRetrievalFailure(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	id := r.PathValue("id")
+	var req retrievalFailureRequest
+	if err := response.DecodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
+	}
+	var assignment *store.IssueAssignment
+	if err := store.WithTx(h.db, func(repos store.Repositories) error {
+		current, err := repos.Assignments.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errAssignmentNotFound
+		}
+		assignment, err = repos.Assignments.CompleteRetrievalFailure(store.RetrievalOutcomeInput{
+			AssignmentID:      id,
+			FailureReason:     req.Reason,
+			Policy:            req.Policy,
+			ContinueOnFailure: req.ContinueOnFailure,
+			AuditMetadataJSON: req.AuditMetadataJSON,
+		})
+		return err
+	}); err != nil {
+		writeAssignmentExecutionError(w, err, "failed to complete retrieval failure")
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
 func (h *AssignmentHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
@@ -360,10 +466,10 @@ func (h *AssignmentHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		if current == nil {
 			return errAssignmentNotFound
 		}
-		assignment, result, err := repos.Assignments.CompleteWithResult(store.CompleteAssignmentInput{
+		assignment, result, err := repos.Assignments.CompleteWithResultAndInfluence(store.CompleteAssignmentInput{
 			AssignmentID: id,
 			Output:       req.Output,
-		})
+		}, req.InfluenceEvents, nil)
 		if err != nil {
 			return err
 		}
@@ -385,6 +491,8 @@ func writeAssignmentExecutionError(w http.ResponseWriter, err error, message str
 		response.Error(w, http.StatusBadRequest, "ASSIGNMENT_INVALID_TRANSITION", "assignment transition is not allowed", "")
 	case errors.Is(err, store.ErrAssignmentStateConflict):
 		response.Error(w, http.StatusConflict, "ASSIGNMENT_STATE_CONFLICT", "assignment state changed before this operation could apply", "")
+	case errors.Is(err, store.ErrRetrievalAuditRequired):
+		response.Error(w, http.StatusBadRequest, "RETRIEVAL_AUDIT_REQUIRED", "continue-without-memory requires retrieval_failed audit metadata and reason", "")
 	default:
 		response.Error(w, http.StatusInternalServerError, "INTERNAL", message, err.Error())
 	}

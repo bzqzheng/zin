@@ -86,40 +86,57 @@ type IssueActivity struct {
 }
 
 type IssueAssignment struct {
-	ID                 string     `json:"id"`
-	IssueID            string     `json:"issue_id"`
-	AgentID            string     `json:"agent_id"`
-	AgentName          string     `json:"agent_name"`
-	RuntimeID          string     `json:"runtime_id"`
-	RuntimeName        string     `json:"runtime_name"`
-	RuntimeStatus      string     `json:"runtime_status"`
-	RequestedBy        string     `json:"requested_by"`
-	SourceType         string     `json:"source_type"`
-	SourceID           string     `json:"source_id"`
-	ClientRequestID    string     `json:"client_request_id"`
-	RequestFingerprint string     `json:"request_fingerprint"`
-	Status             string     `json:"status"`
-	DedupeKey          string     `json:"dedupe_key"`
-	ErrorCode          string     `json:"error_code"`
-	ErrorMessage       string     `json:"error_message"`
-	RequestedAt        time.Time  `json:"requested_at"`
-	AcceptedAt         *time.Time `json:"accepted_at"`
-	CompletedAt        *time.Time `json:"completed_at"`
-	FailedAt           *time.Time `json:"failed_at"`
-	CancelledAt        *time.Time `json:"cancelled_at"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	ID                     string     `json:"id"`
+	IssueID                string     `json:"issue_id"`
+	AgentID                string     `json:"agent_id"`
+	AgentName              string     `json:"agent_name"`
+	RuntimeID              string     `json:"runtime_id"`
+	RuntimeName            string     `json:"runtime_name"`
+	RuntimeStatus          string     `json:"runtime_status"`
+	RequestedBy            string     `json:"requested_by"`
+	SourceType             string     `json:"source_type"`
+	SourceID               string     `json:"source_id"`
+	ClientRequestID        string     `json:"client_request_id"`
+	RequestFingerprint     string     `json:"request_fingerprint"`
+	Status                 string     `json:"status"`
+	DedupeKey              string     `json:"dedupe_key"`
+	ErrorCode              string     `json:"error_code"`
+	ErrorMessage           string     `json:"error_message"`
+	RetrievalStatus        string     `json:"retrieval_status"`
+	RetrievalFailureReason string     `json:"retrieval_failure_reason"`
+	RetrievalPolicy        string     `json:"retrieval_policy"`
+	RetrievalAuditMetadata string     `json:"retrieval_audit_metadata"`
+	RequestedAt            time.Time  `json:"requested_at"`
+	AcceptedAt             *time.Time `json:"accepted_at"`
+	CompletedAt            *time.Time `json:"completed_at"`
+	FailedAt               *time.Time `json:"failed_at"`
+	CancelledAt            *time.Time `json:"cancelled_at"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 type AssignmentResult struct {
-	ResultID     string    `json:"result_id"`
-	AssignmentID string    `json:"assignment_id"`
-	AttemptNo    int       `json:"attempt_no"`
-	Output       string    `json:"output"`
-	Status       string    `json:"status"`
-	Error        string    `json:"error"`
-	StartedAt    time.Time `json:"started_at"`
-	FinishedAt   time.Time `json:"finished_at"`
+	ResultID                    string    `json:"result_id"`
+	AssignmentID                string    `json:"assignment_id"`
+	AttemptNo                   int       `json:"attempt_no"`
+	Output                      string    `json:"output"`
+	Status                      string    `json:"status"`
+	Error                       string    `json:"error"`
+	ObservabilityDegraded       bool      `json:"observability_degraded"`
+	ObservabilityDegradedReason string    `json:"observability_degraded_reason"`
+	StartedAt                   time.Time `json:"started_at"`
+	FinishedAt                  time.Time `json:"finished_at"`
+}
+
+type MemoryInfluenceEvent struct {
+	ID            string    `json:"id"`
+	AssignmentID  string    `json:"assignment_id"`
+	ResultID      string    `json:"result_id"`
+	MemoryID      string    `json:"memory_id"`
+	InfluenceType string    `json:"influence_type"`
+	ReasonCode    string    `json:"reason_code"`
+	MetadataJSON  string    `json:"metadata_json"`
+	AppliedAt     time.Time `json:"applied_at"`
 }
 
 func parseTime(s string) (time.Time, error) {

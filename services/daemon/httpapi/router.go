@@ -50,6 +50,10 @@ func NewRouter(
 	mux.HandleFunc("GET /api/issues/{id}/assignments", assignments.List)
 	mux.HandleFunc("POST /api/issues/{id}/assignments", assignments.Create)
 	mux.HandleFunc("POST /api/assignments/{id}/transition", assignments.Transition)
+	mux.HandleFunc("POST /api/assignments/{id}/retrieval/creation-failure", assignments.RecordRetrievalCreationFailure)
+	mux.HandleFunc("POST /api/assignments/{id}/retrieval/start", assignments.StartRetrieval)
+	mux.HandleFunc("POST /api/assignments/{id}/retrieval/empty", assignments.CompleteRetrievalEmpty)
+	mux.HandleFunc("POST /api/assignments/{id}/retrieval/failure", assignments.CompleteRetrievalFailure)
 	mux.HandleFunc("POST /api/assignments/{id}/complete", assignments.Complete)
 	mux.HandleFunc("POST /api/assignments/{id}/cancel", assignments.Cancel)
 
