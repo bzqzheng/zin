@@ -351,6 +351,49 @@ func TestAssignmentCreateReplayListAndCancel(t *testing.T) {
 	}
 }
 
+func TestAssignmentExecutionAPIUsesCASAndPersistsResult(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignment execution", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Execute work"})
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtime := runtimeByKind(t, runtimes.Runtimes, "codex")
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+runtime.ID+`"}`, http.StatusCreated)
+
+	type assignmentPayload struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}
+	created := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"exec-1"}`, http.StatusCreated)
+	retrieving := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"queued","to_status":"retrieving_memory"}`, http.StatusOK)
+	if retrieving.Assignment.Status != "retrieving_memory" {
+		t.Fatalf("expected retrieving_memory, got %#v", retrieving.Assignment)
+	}
+	stale := requestJSON[map[string]map[string]string](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"queued","to_status":"retrieving_memory"}`, http.StatusConflict)
+	if stale["error"]["code"] != "ASSIGNMENT_STATE_CONFLICT" {
+		t.Fatalf("expected CAS conflict, got %#v", stale)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"retrieving_memory","to_status":"running"}`, http.StatusBadRequest)
+	requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"retrieving_memory","to_status":"ready"}`, http.StatusOK)
+	requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"ready","to_status":"running"}`, http.StatusOK)
+
+	completed := requestJSON[struct {
+		Assignment store.IssueAssignment  `json:"assignment"`
+		Result     store.AssignmentResult `json:"result"`
+	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/complete", `{"output":"finished"}`, http.StatusOK)
+	if completed.Assignment.Status != "succeeded" || completed.Result.AttemptNo != 1 || completed.Result.Output != "finished" {
+		t.Fatalf("expected succeeded assignment result, got %#v", completed)
+	}
+	assertStatus(t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/complete", `{"output":"again"}`, http.StatusConflict)
+}
+
 func TestRuntimeDiscoveryContracts(t *testing.T) {
 	router, _, _, cleanup := setupRouter(t)
 	defer cleanup()

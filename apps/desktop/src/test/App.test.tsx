@@ -565,6 +565,8 @@ describe('App', () => {
             client_request_id: body.client_request_id,
             status: 'queued',
             dedupe_key: `dedupe-${assignments.length + 1}`,
+            error_code: '',
+            error_message: '',
             requested_at: '2026-05-02T14:30:00Z',
             accepted_at: null,
             completed_at: null,

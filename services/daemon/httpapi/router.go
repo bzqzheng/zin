@@ -49,6 +49,8 @@ func NewRouter(
 	mux.HandleFunc("GET /api/issues/{id}/activity", interactions.ListActivity)
 	mux.HandleFunc("GET /api/issues/{id}/assignments", assignments.List)
 	mux.HandleFunc("POST /api/issues/{id}/assignments", assignments.Create)
+	mux.HandleFunc("POST /api/assignments/{id}/transition", assignments.Transition)
+	mux.HandleFunc("POST /api/assignments/{id}/complete", assignments.Complete)
 	mux.HandleFunc("POST /api/assignments/{id}/cancel", assignments.Cancel)
 
 	mux.HandleFunc("GET /api/agents", agents.List)
