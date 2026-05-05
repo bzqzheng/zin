@@ -49,9 +49,26 @@ type cancelAssignmentRequest struct {
 	Reason string `json:"reason"`
 }
 
+type transitionAssignmentRequest struct {
+	FromStatus string `json:"from_status"`
+	ToStatus   string `json:"to_status"`
+}
+
+type completeAssignmentRequest struct {
+	FromStatus string `json:"from_status"`
+	Status     string `json:"status"`
+	Output     string `json:"output"`
+	Error      string `json:"error"`
+}
+
 type assignmentResponse struct {
 	Assignment       *store.IssueAssignment `json:"assignment"`
 	IdempotentReplay bool                   `json:"idempotent_replay,omitempty"`
+}
+
+type assignmentResultResponse struct {
+	Assignment *store.IssueAssignment  `json:"assignment"`
+	Result     *store.AssignmentResult `json:"result"`
 }
 
 type assignmentListResponse struct {
@@ -257,7 +274,7 @@ func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		if current == nil {
 			return errAssignmentNotFound
 		}
-		if current.Status == "completed" || current.Status == "failed" || current.Status == "cancelled" {
+		if store.AssignmentStatusTerminal(current.Status) {
 			return errAssignmentTerminal
 		}
 		assignment, err = repos.Assignments.Cancel(id)
@@ -287,6 +304,10 @@ func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, http.StatusNotFound, "ASSIGNMENT_NOT_FOUND", "assignment not found", "")
 		case errors.Is(err, errAssignmentTerminal):
 			response.Error(w, http.StatusConflict, "ASSIGNMENT_TERMINAL", "assignment is already terminal", "")
+		case errors.Is(err, store.ErrAssignmentStateConflict):
+			response.Error(w, http.StatusConflict, "ASSIGNMENT_STATE_CONFLICT", "assignment state changed before cancellation could commit", "")
+		case errors.Is(err, store.ErrInvalidAssignmentTransition):
+			response.Error(w, http.StatusConflict, "ASSIGNMENT_TERMINAL", "assignment cannot be cancelled from its current state", "")
 		default:
 			response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to cancel assignment", err.Error())
 		}
@@ -295,11 +316,64 @@ func (h *AssignmentHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
 }
 
+func (h *AssignmentHandler) Transition(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	id := r.PathValue("id")
+	var req transitionAssignmentRequest
+	if err := response.DecodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
+	}
+	req.FromStatus = strings.TrimSpace(req.FromStatus)
+	req.ToStatus = strings.TrimSpace(req.ToStatus)
+	assignment, err := h.assignmentRepo.Transition(id, req.FromStatus, req.ToStatus)
+	if err != nil {
+		writeAssignmentExecutionError(w, err)
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResponse{Assignment: assignment})
+}
+
+func (h *AssignmentHandler) CompleteWithResult(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	id := r.PathValue("id")
+	var req completeAssignmentRequest
+	if err := response.DecodeJSON(r, &req); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body", err.Error())
+		return
+	}
+	assignment, result, err := h.assignmentRepo.CompleteWithResult(store.CompleteAssignmentInput{
+		AssignmentID: id,
+		FromStatus:   strings.TrimSpace(req.FromStatus),
+		Status:       strings.TrimSpace(req.Status),
+		Output:       req.Output,
+		Error:        req.Error,
+	})
+	if err != nil {
+		writeAssignmentExecutionError(w, err)
+		return
+	}
+	response.JSON(w, http.StatusOK, assignmentResultResponse{Assignment: assignment, Result: result})
+}
+
 var (
 	errAssignmentNotFound = errors.New("assignment not found")
 	errAssignmentTerminal = errors.New("assignment terminal")
 	errIdempotencyReuse   = errors.New("idempotency key reused")
 )
+
+func writeAssignmentExecutionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrAssignmentStateConflict):
+		response.Error(w, http.StatusConflict, "ASSIGNMENT_STATE_CONFLICT", "assignment state changed before this transition could commit", "")
+	case errors.Is(err, store.ErrInvalidAssignmentTransition):
+		response.Error(w, http.StatusBadRequest, "INVALID_ASSIGNMENT_TRANSITION", "assignment transition is not valid", "")
+	case errors.Is(err, store.ErrAssignmentResultStatus):
+		response.Error(w, http.StatusBadRequest, "INVALID_ASSIGNMENT_RESULT_STATUS", "assignment result status must be succeeded or failed", "")
+	default:
+		response.Error(w, http.StatusInternalServerError, "INTERNAL", "failed to update assignment execution state", err.Error())
+	}
+}
 
 func assignmentFingerprint(issueID, agentID, sourceType, sourceID string) string {
 	return sha256Hex(issueID + "\x00" + agentID + "\x00" + sourceType + "\x00" + sourceID)

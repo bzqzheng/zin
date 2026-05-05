@@ -22,11 +22,11 @@ func TestRun(t *testing.T) {
 	}
 
 	var tableCount int
-	if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','agents','issues','tags','issue_tags','issue_comments','issue_activity')").Scan(&tableCount); err != nil {
+	if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','agents','issues','tags','issue_tags','issue_comments','issue_activity','runtimes','issue_assignments','assignment_results')").Scan(&tableCount); err != nil {
 		t.Fatalf("verify tables: %v", err)
 	}
-	if tableCount != 7 {
-		t.Errorf("expected 7 tables, got %d", tableCount)
+	if tableCount != 10 {
+		t.Errorf("expected 10 tables, got %d", tableCount)
 	}
 
 	for _, indexName := range []string{
@@ -35,6 +35,7 @@ func TestRun(t *testing.T) {
 		"idx_issue_tags_issue_id",
 		"idx_issue_comments_issue_created",
 		"idx_issue_activity_issue_created",
+		"idx_assignment_results_assignment",
 	} {
 		var indexCount int
 		if err := database.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?", indexName).Scan(&indexCount); err != nil {

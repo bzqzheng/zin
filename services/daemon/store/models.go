@@ -109,6 +109,17 @@ type IssueAssignment struct {
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
+type AssignmentResult struct {
+	ResultID     string    `json:"result_id"`
+	AssignmentID string    `json:"assignment_id"`
+	AttemptNo    int       `json:"attempt_no"`
+	Output       string    `json:"output"`
+	Status       string    `json:"status"`
+	Error        string    `json:"error"`
+	StartedAt    time.Time `json:"started_at"`
+	FinishedAt   time.Time `json:"finished_at"`
+}
+
 func parseTime(s string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {

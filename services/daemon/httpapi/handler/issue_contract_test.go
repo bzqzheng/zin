@@ -351,6 +351,59 @@ func TestAssignmentCreateReplayListAndCancel(t *testing.T) {
 	}
 }
 
+func TestAssignmentExecutionAPIRejectsDuplicateWorkers(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Assignments", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	issue := postIssue(t, router, project.ID, map[string]string{"title": "Run work"})
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtime := runtimeByKind(t, runtimes.Runtimes, "codex")
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+runtime.ID+`"}`, http.StatusCreated)
+
+	created := requestJSON[struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"issue_detail","client_request_id":"req-exec-1"}`, http.StatusCreated)
+
+	transitionBody := `{"from_status":"queued","to_status":"retrieving_memory"}`
+	first := requestJSON[struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", transitionBody, http.StatusOK)
+	if first.Assignment.Status != store.AssignmentStatusRetrievingMemory {
+		t.Fatalf("expected retrieving_memory, got %#v", first.Assignment)
+	}
+	conflict := requestJSON[map[string]map[string]string](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", transitionBody, http.StatusConflict)
+	if conflict["error"]["code"] != "ASSIGNMENT_STATE_CONFLICT" {
+		t.Fatalf("expected state conflict, got %#v", conflict)
+	}
+
+	requestJSON[struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"retrieving_memory","to_status":"ready"}`, http.StatusOK)
+	requestJSON[struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/transition", `{"from_status":"ready","to_status":"running"}`, http.StatusOK)
+
+	result := requestJSON[struct {
+		Assignment store.IssueAssignment  `json:"assignment"`
+		Result     store.AssignmentResult `json:"result"`
+	}](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/results", `{"from_status":"running","status":"succeeded","output":"done"}`, http.StatusOK)
+	if result.Assignment.Status != store.AssignmentStatusSucceeded || result.Result.AttemptNo != 1 {
+		t.Fatalf("expected succeeded first result, got %#v", result)
+	}
+	conflict = requestJSON[map[string]map[string]string](t, router, http.MethodPost, "/api/assignments/"+created.Assignment.ID+"/results", `{"from_status":"running","status":"succeeded","output":"duplicate"}`, http.StatusConflict)
+	if conflict["error"]["code"] != "ASSIGNMENT_STATE_CONFLICT" {
+		t.Fatalf("expected duplicate result state conflict, got %#v", conflict)
+	}
+}
+
 func TestRuntimeDiscoveryContracts(t *testing.T) {
 	router, _, _, cleanup := setupRouter(t)
 	defer cleanup()

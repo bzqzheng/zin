@@ -2,10 +2,29 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+const (
+	AssignmentStatusQueued           = "queued"
+	AssignmentStatusRetrievingMemory = "retrieving_memory"
+	AssignmentStatusReady            = "ready"
+	AssignmentStatusRunning          = "running"
+	AssignmentStatusSucceeded        = "succeeded"
+	AssignmentStatusFailed           = "failed"
+	AssignmentStatusCancelled        = "cancelled"
+	AssignmentStatusRetrievalFailed  = "retrieval_failed"
+)
+
+var (
+	ErrAssignmentStateConflict     = errors.New("assignment state conflict")
+	ErrInvalidAssignmentTransition = errors.New("invalid assignment transition")
+	ErrAssignmentResultStatus      = errors.New("invalid assignment result status")
+	ErrAssignmentResultTxRequired  = errors.New("assignment result transaction required")
 )
 
 type IssueAssignmentRepository struct {
@@ -22,6 +41,16 @@ type CreateIssueAssignmentInput struct {
 	ClientRequestID    string
 	RequestFingerprint string
 	DedupeKey          string
+}
+
+type CompleteAssignmentInput struct {
+	AssignmentID string
+	FromStatus   string
+	Status       string
+	Output       string
+	Error        string
+	StartedAt    time.Time
+	FinishedAt   time.Time
 }
 
 func NewIssueAssignmentRepository(db *sql.DB) *IssueAssignmentRepository {
@@ -47,7 +76,7 @@ func (r *IssueAssignmentRepository) Create(input CreateIssueAssignmentInput) (*I
 		SourceID:           input.SourceID,
 		ClientRequestID:    input.ClientRequestID,
 		RequestFingerprint: input.RequestFingerprint,
-		Status:             "queued",
+		Status:             AssignmentStatusQueued,
 		DedupeKey:          input.DedupeKey,
 		RequestedAt:        now,
 		CreatedAt:          now,
@@ -123,19 +152,185 @@ func (r *IssueAssignmentRepository) ListByIssue(issueID string) ([]*IssueAssignm
 }
 
 func (r *IssueAssignmentRepository) Cancel(id string) (*IssueAssignment, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.q.Exec(
-		`UPDATE issue_assignments
-		 SET status = 'cancelled', cancelled_at = ?, updated_at = ?
-		 WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
-		now,
-		now,
-		id,
-	)
+	current, err := r.GetByID(id)
 	if err != nil {
-		return nil, fmt.Errorf("cancel issue assignment: %w", err)
+		return nil, err
+	}
+	if current == nil {
+		return nil, nil
+	}
+	return r.Transition(id, current.Status, AssignmentStatusCancelled)
+}
+
+func (r *IssueAssignmentRepository) Transition(id, fromStatus, toStatus string) (*IssueAssignment, error) {
+	if !validAssignmentTransition(fromStatus, toStatus, false) {
+		return nil, ErrInvalidAssignmentTransition
+	}
+	if err := r.transitionCAS(id, fromStatus, toStatus); err != nil {
+		return nil, err
 	}
 	return r.GetByID(id)
+}
+
+func (r *IssueAssignmentRepository) CompleteWithResult(input CompleteAssignmentInput) (*IssueAssignment, *AssignmentResult, error) {
+	if r.db == nil {
+		return nil, nil, ErrAssignmentResultTxRequired
+	}
+
+	var assignment *IssueAssignment
+	var result *AssignmentResult
+	err := WithTx(r.db, func(repos Repositories) error {
+		created, err := repos.Assignments.createResult(input)
+		if err != nil {
+			return err
+		}
+		if err := repos.Assignments.transitionCAS(input.AssignmentID, input.FromStatus, input.Status); err != nil {
+			return err
+		}
+		updated, err := repos.Assignments.GetByID(input.AssignmentID)
+		if err != nil {
+			return err
+		}
+		result = created
+		assignment = updated
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return assignment, result, nil
+}
+
+func (r *IssueAssignmentRepository) RecordAttemptResult(input CompleteAssignmentInput) (*AssignmentResult, error) {
+	if r.db == nil {
+		return nil, ErrAssignmentResultTxRequired
+	}
+	if input.Status != AssignmentStatusFailed {
+		return nil, ErrAssignmentResultStatus
+	}
+
+	var result *AssignmentResult
+	err := WithTx(r.db, func(repos Repositories) error {
+		if err := repos.Assignments.requireStatus(input.AssignmentID, input.FromStatus); err != nil {
+			return err
+		}
+		created, err := repos.Assignments.createResult(input)
+		if err != nil {
+			return err
+		}
+		result = created
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *IssueAssignmentRepository) requireStatus(id, status string) error {
+	var count int
+	if err := r.q.QueryRow(
+		`SELECT COUNT(*) FROM issue_assignments WHERE id = ? AND status = ?`,
+		id,
+		status,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("check assignment status: %w", err)
+	}
+	if count == 0 {
+		return ErrAssignmentStateConflict
+	}
+	return nil
+}
+
+func (r *IssueAssignmentRepository) transitionCAS(id, fromStatus, toStatus string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	setClause := "status = ?, updated_at = ?"
+	args := []any{toStatus, now}
+	switch toStatus {
+	case AssignmentStatusRunning:
+		setClause = "status = ?, accepted_at = COALESCE(accepted_at, ?), updated_at = ?"
+		args = []any{toStatus, now, now}
+	case AssignmentStatusSucceeded:
+		setClause = "status = ?, completed_at = ?, updated_at = ?"
+		args = []any{toStatus, now, now}
+	case AssignmentStatusFailed, AssignmentStatusRetrievalFailed:
+		setClause = "status = ?, failed_at = ?, updated_at = ?"
+		args = []any{toStatus, now, now}
+	case AssignmentStatusCancelled:
+		setClause = "status = ?, cancelled_at = ?, updated_at = ?"
+		args = []any{toStatus, now, now}
+	}
+	args = append(args, id, fromStatus)
+	res, err := r.q.Exec(
+		`UPDATE issue_assignments SET `+setClause+` WHERE id = ? AND status = ?`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("transition issue assignment: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("transition issue assignment rows affected: %w", err)
+	}
+	if affected == 0 {
+		return ErrAssignmentStateConflict
+	}
+	return nil
+}
+
+func (r *IssueAssignmentRepository) createResult(input CompleteAssignmentInput) (*AssignmentResult, error) {
+	if !validAssignmentTransition(input.FromStatus, input.Status, true) {
+		return nil, ErrInvalidAssignmentTransition
+	}
+	if input.Status != AssignmentStatusSucceeded && input.Status != AssignmentStatusFailed {
+		return nil, ErrAssignmentResultStatus
+	}
+	uid, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate uuid: %w", err)
+	}
+	startedAt := input.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	finishedAt := input.FinishedAt
+	if finishedAt.IsZero() {
+		finishedAt = time.Now().UTC()
+	}
+	var attemptNo int
+	if err := r.q.QueryRow(
+		`SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM assignment_results WHERE assignment_id = ?`,
+		input.AssignmentID,
+	).Scan(&attemptNo); err != nil {
+		return nil, fmt.Errorf("next assignment result attempt: %w", err)
+	}
+	result := &AssignmentResult{
+		ResultID:     uid.String(),
+		AssignmentID: input.AssignmentID,
+		AttemptNo:    attemptNo,
+		Output:       input.Output,
+		Status:       input.Status,
+		Error:        input.Error,
+		StartedAt:    startedAt,
+		FinishedAt:   finishedAt,
+	}
+	_, err = r.q.Exec(
+		`INSERT INTO assignment_results
+		 (result_id, assignment_id, attempt_no, output, status, error, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		result.ResultID,
+		result.AssignmentID,
+		result.AttemptNo,
+		result.Output,
+		result.Status,
+		result.Error,
+		result.StartedAt.Format(time.RFC3339),
+		result.FinishedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert assignment result: %w", err)
+	}
+	return result, nil
 }
 
 func (r *IssueAssignmentRepository) get(where string, arg string) (*IssueAssignment, error) {
@@ -158,6 +353,30 @@ func (r *IssueAssignmentRepository) get(where string, arg string) (*IssueAssignm
 		return nil, err
 	}
 	return assignment, nil
+}
+
+func validAssignmentTransition(fromStatus, toStatus string, withResult bool) bool {
+	switch fromStatus {
+	case AssignmentStatusQueued:
+		return toStatus == AssignmentStatusRetrievingMemory || toStatus == AssignmentStatusCancelled
+	case AssignmentStatusRetrievingMemory:
+		return toStatus == AssignmentStatusReady || toStatus == AssignmentStatusRetrievalFailed || toStatus == AssignmentStatusCancelled
+	case AssignmentStatusReady:
+		return toStatus == AssignmentStatusRunning || toStatus == AssignmentStatusCancelled
+	case AssignmentStatusRunning:
+		return (withResult && (toStatus == AssignmentStatusSucceeded || toStatus == AssignmentStatusFailed)) || toStatus == AssignmentStatusCancelled
+	default:
+		return false
+	}
+}
+
+func AssignmentStatusTerminal(status string) bool {
+	switch status {
+	case AssignmentStatusSucceeded, AssignmentStatusFailed, AssignmentStatusCancelled, AssignmentStatusRetrievalFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 type assignmentScanner interface {
