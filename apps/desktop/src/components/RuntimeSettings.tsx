@@ -168,7 +168,7 @@ export default function RuntimeSettings({
   )
 
   return (
-    <main className="flex-1 overflow-y-auto bg-zinc-950">
+    <main className="min-w-0 flex-1 overflow-y-auto bg-zinc-950">
       <div className="mx-auto max-w-5xl px-8 py-6">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>

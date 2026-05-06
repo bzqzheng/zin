@@ -148,8 +148,8 @@ describe('App', () => {
     renderApp(fetchApi)
 
     expect(await screen.findByText('No projects yet')).toBeVisible()
-    expect(screen.getByText('Create a project to track issues')).toBeVisible()
-    expect(screen.getByText('No issue selected')).toBeVisible()
+    expect(screen.getByText('Create a project to track work')).toBeVisible()
+    expect(screen.getByText('No work item selected')).toBeVisible()
     expect(fetchApi).toHaveBeenCalledWith('/api/projects')
   })
 
@@ -165,8 +165,8 @@ describe('App', () => {
     renderApp(fetchApi)
 
     expect(await screen.findByRole('button', { name: 'Alpha' })).toBeVisible()
-    expect(await screen.findByText('No issues in this project')).toBeVisible()
-    expect(screen.getByText('No issue selected')).toBeVisible()
+    expect(await screen.findByText('No work items in this project')).toBeVisible()
+    expect(screen.getByText('No work item selected')).toBeVisible()
   })
 
   it('loads issue detail from the daemon as selection changes', async () => {
@@ -205,6 +205,45 @@ describe('App', () => {
     })
   })
 
+  it('keeps navigation and fields usable when secondary panels fail independently', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    const betaIssue = makeIssue({
+      id: 'issue-beta',
+      identifier: 'ISSUE-2',
+      title: 'Beta issue',
+      priority: 'high',
+      status: 'in_progress',
+    })
+    const fetchApi = vi.fn((path: string) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue, betaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-beta') return Promise.resolve(betaIssue)
+      if (path.endsWith('/tags')) return Promise.resolve([])
+      if (path.endsWith('/comments')) return Promise.reject(new Error('comments API unavailable'))
+      if (path.endsWith('/activity')) return Promise.reject(new Error('activity API unavailable'))
+      if (path.endsWith('/assignments')) return Promise.resolve({ assignments: [] })
+      if (path === '/api/agents') return Promise.reject(new Error('agents API unavailable'))
+      if (path === '/api/runtimes') return Promise.reject(new Error('runtime API unavailable'))
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+    expect(screen.getByLabelText('Title')).toBeEnabled()
+    expect(screen.getByText('Comments failed to load')).toBeVisible()
+    expect(screen.getByText('Activity failed to load')).toBeVisible()
+    expect(screen.getByText('Comments degraded')).toBeVisible()
+    expect(screen.getByText('Agents degraded')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: /ISSUE-2.*Beta issue/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Beta issue' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Issues' })).toBeVisible()
+  })
+
   it('keeps the current issue list stable when the selected project is clicked again', async () => {
     const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
     const fetchApi = vi.fn((path: string) => {
@@ -222,7 +261,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Alpha' }))
 
-    expect(screen.queryByText('Loading issues...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Loading work items...')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /ISSUE-1.*Alpha issue/ })).toBeVisible()
   })
 
@@ -251,7 +290,7 @@ describe('App', () => {
     fireEvent.click(within(projectsPanel).getByRole('button', { name: 'Retry' }))
 
     expect(await screen.findByRole('button', { name: 'Alpha' })).toBeVisible()
-    expect(await screen.findByText('No issues in this project')).toBeVisible()
+    expect(await screen.findByText('No work items in this project')).toBeVisible()
   })
 
   it('saves issue fields through the daemon and reloads server truth after retry', async () => {

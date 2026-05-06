@@ -1098,7 +1098,7 @@ export default function App() {
           onValidateRuntime={validateRuntime}
         />
       ) : (
-        <>
+        <div className="flex min-w-0 flex-1">
           <IssueDetail
             issue={visibleIssueDetail}
             projectTags={visibleProjectTags}
@@ -1135,7 +1135,7 @@ export default function App() {
             issueSelected={Boolean(visibleIssueDetail.data)}
             onRetry={() => loadActivity()}
           />
-        </>
+        </div>
       )}
     </div>
   )

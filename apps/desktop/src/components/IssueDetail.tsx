@@ -78,9 +78,17 @@ function displayLabel(value: string) {
 
 function EmptyDetail() {
   return (
-    <div className="max-w-3xl mx-auto px-8 py-6">
-      <p className="text-sm text-zinc-500">No issue selected</p>
+    <div className="mx-auto max-w-4xl px-8 py-8">
+      <p className="text-sm text-zinc-500">No work item selected</p>
     </div>
+  )
+}
+
+function DegradedBadge({ label }: { label: string }) {
+  return (
+    <span className="rounded border border-amber-900/60 bg-amber-950/20 px-2 py-1 text-xs font-medium text-amber-300">
+      {label}
+    </span>
   )
 }
 
@@ -409,9 +417,9 @@ export default function IssueDetail({
 
   if (issue.status === 'loading') {
     return (
-      <main className="flex-1 bg-zinc-950 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-8 py-6">
-          <p className="text-sm text-zinc-500">Loading issue...</p>
+      <main className="min-w-0 flex-1 bg-zinc-950 overflow-y-auto">
+        <div className="mx-auto max-w-4xl px-8 py-8">
+          <p className="text-sm text-zinc-500">Loading work item...</p>
         </div>
       </main>
     )
@@ -419,9 +427,9 @@ export default function IssueDetail({
 
   if (issue.status === 'error') {
     return (
-      <main className="flex-1 bg-zinc-950 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-8 py-6">
-          <SectionError title="Issue failed to load" error={issue.error} onRetry={onRetryIssue} />
+      <main className="min-w-0 flex-1 bg-zinc-950 overflow-y-auto">
+        <div className="mx-auto max-w-4xl px-8 py-8">
+          <SectionError title="Work item failed to load" error={issue.error} onRetry={onRetryIssue} />
         </div>
       </main>
     )
@@ -429,15 +437,22 @@ export default function IssueDetail({
 
   if (!issue.data) {
     return (
-      <main className="flex-1 bg-zinc-950 overflow-y-auto">
+      <main className="min-w-0 flex-1 bg-zinc-950 overflow-y-auto">
         <EmptyDetail />
       </main>
     )
   }
 
+  const degradedResources = [
+    projectTags.status === 'error' || issueTags.status === 'error' ? 'Tags degraded' : null,
+    comments.status === 'error' ? 'Comments degraded' : null,
+    assignments.status === 'error' ? 'Assignments degraded' : null,
+    agents.status === 'error' || runtimes.status === 'error' ? 'Agents degraded' : null,
+  ].filter((label): label is string => Boolean(label))
+
   return (
-    <main className="flex-1 bg-zinc-950 overflow-y-auto">
-      <div className="max-w-3xl mx-auto px-8 py-6">
+    <main className="min-w-0 flex-1 bg-zinc-950 overflow-y-auto">
+      <div className="mx-auto max-w-4xl px-8 py-8">
         <div className="mb-6">
           <div className="mb-2 flex flex-wrap items-center gap-3">
             <span className={`${labelStyle} font-mono text-zinc-500`}>
@@ -450,12 +465,17 @@ export default function IssueDetail({
               {displayLabel(issue.data.status)}
             </span>
           </div>
-          <h2 className="text-xl font-semibold text-zinc-100">
+          <h2 className="max-w-3xl text-2xl font-semibold leading-snug text-zinc-100">
             {issue.data.title}
           </h2>
-          <p className="mt-1 text-sm text-zinc-500">
-            Created {formatDate(issue.data.created_at)}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <p className="text-sm text-zinc-500">
+              Created {formatDate(issue.data.created_at)}
+            </p>
+            {degradedResources.map((label) => (
+              <DegradedBadge key={label} label={label} />
+            ))}
+          </div>
           {activeAssignments.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {activeAssignments.map((assignment) => (
@@ -480,9 +500,9 @@ export default function IssueDetail({
           </div>
         )}
 
-        <section className="mb-8">
-          <h3 className="mb-3 text-sm font-medium text-zinc-300">Fields</h3>
-          <div className="space-y-3">
+        <section className="mb-9">
+          <h3 className="mb-3 text-sm font-semibold text-zinc-300">Fields</h3>
+          <div className="space-y-4">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-zinc-500">Title</span>
               <input value={title} onChange={(event) => setTitle(event.target.value)} className={inputStyle} />
@@ -496,7 +516,7 @@ export default function IssueDetail({
                 className={inputStyle}
               />
             </label>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid gap-3 md:grid-cols-3">
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-zinc-500">Status</span>
                 <select value={status} onChange={(event) => setStatus(event.target.value)} className={inputStyle}>
@@ -577,7 +597,7 @@ export default function IssueDetail({
           </div>
         </section>
 
-        <section className="mb-8">
+        <section className="mb-9">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-zinc-300">Assignments</h3>
             {assignments.status === 'loading' && <span className="text-xs text-zinc-500">Loading assignments...</span>}
@@ -628,7 +648,7 @@ export default function IssueDetail({
           )}
         </section>
 
-        <section className="mb-8">
+        <section className="mb-9">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-zinc-300">Agents</h3>
             {(agents.status === 'loading' || runtimes.status === 'loading') && (
@@ -643,7 +663,7 @@ export default function IssueDetail({
             />
           ) : (
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-3 md:grid-cols-2">
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-zinc-500">Agent</span>
                   <select
@@ -675,7 +695,7 @@ export default function IssueDetail({
                   </select>
                 </label>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-3 md:grid-cols-2">
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-zinc-500">Name</span>
                   <input value={agentName} onChange={(event) => setAgentName(event.target.value)} className={inputStyle} />
@@ -733,7 +753,7 @@ export default function IssueDetail({
           )}
         </section>
 
-        <section className="mb-8">
+        <section className="mb-9">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-zinc-300">Tags</h3>
             {(projectTags.status === 'loading' || issueTags.status === 'loading') && (
