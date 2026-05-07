@@ -12,6 +12,19 @@ The daemon should be OS-agnostic and responsible for workspace state, task execu
 
 Agent runtimes should be plug-and-use. Claude, Codex, OpenCode, Hermes, Kimi, Pi, and future tools should be adapters rather than hard-coded product assumptions.
 
+## Agent Runtime Adapters
+
+Zin discovers local agent CLIs and binds agents to healthy runtime records before work can be assigned.
+
+Supported runtime discovery targets:
+
+- Codex CLI
+- Claude CLI
+- Gemini CLI
+- OpenCode CLI
+
+If discovery finds no healthy runtime, install one of the supported CLIs, make sure its executable is available on `PATH`, then run runtime discovery again. If a CLI is installed outside `PATH`, use Runtime Setup to enter the binary path and revalidate it.
+
 ## Early Technology Anchor
 
 - Desktop: Tauri + React + TypeScript
@@ -19,4 +32,3 @@ Agent runtimes should be plug-and-use. Claude, Codex, OpenCode, Hermes, Kimi, Pi
 - Orchestration daemon: Go
 - Local persistence: SQLite first, PGlite still open for evaluation
 - Execution isolation: per-task workdirs
-

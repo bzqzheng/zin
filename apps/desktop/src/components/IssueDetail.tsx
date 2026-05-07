@@ -28,6 +28,8 @@ interface IssueDetailProps {
   runtimes: ResourceState<Runtime[]>
   mutationPending: boolean
   mutationError: string | null
+  runtimeMutationPending: boolean
+  runtimeMutationError: string | null
   onRetryIssue: () => void
   onRetryTags: () => void
   onRetryComments: () => void
@@ -322,12 +324,14 @@ function RuntimeFunnelPanel({
   agents,
   runtimes,
   disabled,
+  runtimeError,
   onDiscoverRuntimes,
   onOpenRuntimeSettings,
 }: {
   agents: ResourceState<Agent[]>
   runtimes: ResourceState<Runtime[]>
   disabled: boolean
+  runtimeError: string | null
   onDiscoverRuntimes: () => Promise<void>
   onOpenRuntimeSettings: () => void
 }) {
@@ -383,6 +387,12 @@ function RuntimeFunnelPanel({
           </a>
         </div>
       )}
+      {runtimeError && (
+        <div className="mt-3 rounded border border-red-900/50 bg-red-950/20 px-3 py-2">
+          <p className="text-sm text-red-300">Runtime discovery failed</p>
+          <p className="mt-1 text-sm text-zinc-500">{runtimeError}</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -397,6 +407,8 @@ export default function IssueDetail({
   runtimes,
   mutationPending,
   mutationError,
+  runtimeMutationPending,
+  runtimeMutationError,
   onRetryIssue,
   onRetryTags,
   onRetryComments,
@@ -583,7 +595,8 @@ export default function IssueDetail({
         <RuntimeFunnelPanel
           agents={agents}
           runtimes={runtimes}
-          disabled={mutationPending}
+          disabled={mutationPending || runtimeMutationPending}
+          runtimeError={runtimeMutationError}
           onDiscoverRuntimes={onDiscoverRuntimes}
           onOpenRuntimeSettings={onOpenRuntimeSettings}
         />

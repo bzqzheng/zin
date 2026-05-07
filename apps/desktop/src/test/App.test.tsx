@@ -738,6 +738,10 @@ describe('App', () => {
     expect(screen.getByText('No runtimes found')).toBeVisible()
     expect(screen.getByText('Supported CLIs: Codex CLI, Claude CLI, Gemini CLI, OpenCode CLI.')).toBeVisible()
     expect(screen.getByRole('link', { name: 'Runtime setup docs' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Runtime setup docs' })).toHaveAttribute(
+      'href',
+      expect.stringContaining('#agent-runtime-adapters'),
+    )
     expect(screen.getByRole('button', { name: 'Assign Agent' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Find Runtimes' }))
@@ -765,6 +769,34 @@ describe('App', () => {
       )
     })
     expect(await screen.findByRole('button', { name: 'Assign Agent' })).toBeEnabled()
+  })
+
+  it('shows runtime discovery failures in the issue runtime funnel', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([activityCreated])
+      if (path === '/api/issues/issue-alpha/assignments') return Promise.resolve({ assignments: [] })
+      if (path === '/api/agents') return Promise.resolve([])
+      if (path === '/api/runtimes') return Promise.resolve({ runtimes: [] })
+      if (path === '/api/runtimes/discover' && init?.method === 'POST') {
+        return Promise.reject(new Error('probe permission denied'))
+      }
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Find Runtimes' }))
+
+    expect(await screen.findByText('Runtime discovery failed')).toBeVisible()
+    expect(screen.getByText('probe permission denied')).toBeVisible()
   })
 
   it('shows assignment blockers with an action back to runtime settings', async () => {

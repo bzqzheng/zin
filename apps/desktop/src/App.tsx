@@ -1109,6 +1109,8 @@ export default function App() {
             runtimes={runtimes}
             mutationPending={mutationPending}
             mutationError={mutationError}
+            runtimeMutationPending={runtimeMutationPending}
+            runtimeMutationError={runtimeMutationError}
             onRetryIssue={() => loadIssueDetail()}
             onRetryTags={() => {
               void Promise.all([loadProjectTags(), loadIssueTags()])
