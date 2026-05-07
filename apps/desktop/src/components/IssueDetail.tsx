@@ -44,6 +44,8 @@ interface IssueDetailProps {
   onCancelAssignment: (assignmentId: string) => Promise<void>
   onCreateAgent: (input: AgentConfigInput) => Promise<void>
   onUpdateAgent: (agentId: string, input: AgentConfigInput) => Promise<void>
+  onDiscoverRuntimes: () => Promise<void>
+  onOpenRuntimeSettings: () => void
 }
 
 const labelStyle = 'text-xs bg-zinc-900 px-2 py-0.5 rounded'
@@ -51,6 +53,7 @@ const inputStyle =
   'w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-600'
 const buttonStyle =
   'rounded border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50'
+const supportedRuntimeLabels = ['Codex CLI', 'Claude CLI', 'Gemini CLI', 'OpenCode CLI']
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
@@ -240,15 +243,32 @@ function assignmentNeedsRuntimeWarning(assignment: IssueAssignment) {
   return assignment.status === 'queued' && assignment.runtime_status !== '' && assignment.runtime_status !== 'healthy'
 }
 
+function assignmentNextAction(assignment: IssueAssignment) {
+  if (assignmentNeedsRuntimeWarning(assignment)) {
+    return 'Runtime needs attention before this can run. Open runtime settings or assign a healthy agent.'
+  }
+  if (assignment.status === 'retrieval_failed') {
+    return 'Assignment context could not be prepared. Check runtime health, then create a new assignment.'
+  }
+  if (assignment.status === 'failed') {
+    return assignment.error_message || 'Assignment failed. Check the agent runtime, then create a new assignment.'
+  }
+  return ''
+}
+
 function AssignmentItem({
   assignment,
   disabled,
   onCancel,
+  onOpenRuntimeSettings,
 }: {
   assignment: IssueAssignment
   disabled: boolean
   onCancel: (assignmentId: string) => Promise<void>
+  onOpenRuntimeSettings: () => void
 }) {
+  const nextAction = assignmentNextAction(assignment)
+
   return (
     <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3">
       <div className="flex items-start justify-between gap-3">
@@ -263,10 +283,19 @@ function AssignmentItem({
           <p className="mt-1 text-xs text-zinc-500">
             Queued {formatDateTime(assignment.requested_at)}{assignment.runtime_name ? ` via ${assignment.runtime_name}` : ''}
           </p>
-          {assignmentNeedsRuntimeWarning(assignment) && (
-            <p className="mt-2 text-xs text-amber-300">
-              Runtime is {displayLabel(assignment.runtime_status)}. This assignment remains queued.
-            </p>
+          {nextAction && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <p className="text-xs text-amber-300">{nextAction}</p>
+              {(assignmentNeedsRuntimeWarning(assignment) || assignment.status === 'retrieval_failed') && (
+                <button
+                  type="button"
+                  onClick={onOpenRuntimeSettings}
+                  className="text-xs font-medium text-zinc-200 hover:text-white"
+                >
+                  Runtime Setup
+                </button>
+              )}
+            </div>
           )}
         </div>
         {assignment.status !== 'succeeded' &&
@@ -285,6 +314,75 @@ function AssignmentItem({
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+function RuntimeFunnelPanel({
+  agents,
+  runtimes,
+  disabled,
+  onDiscoverRuntimes,
+  onOpenRuntimeSettings,
+}: {
+  agents: ResourceState<Agent[]>
+  runtimes: ResourceState<Runtime[]>
+  disabled: boolean
+  onDiscoverRuntimes: () => Promise<void>
+  onOpenRuntimeSettings: () => void
+}) {
+  const healthyRuntimeCount = runtimes.data.filter((runtime) => runtime.health_status === 'healthy').length
+  const showZeroRuntimeGuidance = runtimes.status === 'success' && runtimes.data.length === 0
+  const showNoAgentGuidance = agents.status === 'success' && agents.data.length === 0
+  const showNoAssignableGuidance =
+    agents.status === 'success' && agents.data.length > 0 && agents.data.every((agent) => !agent.assignable)
+
+  if (!showZeroRuntimeGuidance && !showNoAgentGuidance && !showNoAssignableGuidance) return null
+
+  return (
+    <div className="mb-5 rounded border border-zinc-800 bg-zinc-900/40 px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-zinc-200">
+            {showZeroRuntimeGuidance
+              ? 'No runtimes found'
+              : healthyRuntimeCount > 0
+                ? 'Create an agent from a healthy runtime'
+                : 'No assignable agents'}
+          </p>
+          <p className="mt-1 text-sm text-zinc-500">
+            Supported CLIs: {supportedRuntimeLabels.join(', ')}.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              void onDiscoverRuntimes().catch(() => undefined)
+            }}
+            className={buttonStyle}
+          >
+            Find Runtimes
+          </button>
+          <button type="button" onClick={onOpenRuntimeSettings} className={buttonStyle}>
+            Runtime Setup
+          </button>
+        </div>
+      </div>
+      {showZeroRuntimeGuidance && (
+        <div className="mt-3 border-t border-zinc-800 pt-3">
+          <p className="text-xs text-zinc-500">
+            Install a supported CLI, then discover again or set its binary path in runtime settings.
+          </p>
+          <a
+            href="https://github.com/bzqzheng/zin/blob/main/docs/architecture.md#agent-runtime-adapters"
+            className="mt-2 inline-block text-xs font-medium text-zinc-200 hover:text-white"
+          >
+            Runtime setup docs
+          </a>
+        </div>
+      )}
     </div>
   )
 }
@@ -315,6 +413,8 @@ export default function IssueDetail({
   onCancelAssignment,
   onCreateAgent,
   onUpdateAgent,
+  onDiscoverRuntimes,
+  onOpenRuntimeSettings,
 }: IssueDetailProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -480,6 +580,14 @@ export default function IssueDetail({
           </div>
         )}
 
+        <RuntimeFunnelPanel
+          agents={agents}
+          runtimes={runtimes}
+          disabled={mutationPending}
+          onDiscoverRuntimes={onDiscoverRuntimes}
+          onOpenRuntimeSettings={onOpenRuntimeSettings}
+        />
+
         <section className="mb-8">
           <h3 className="mb-3 text-sm font-medium text-zinc-300">Fields</h3>
           <div className="space-y-3">
@@ -548,7 +656,7 @@ export default function IssueDetail({
               />
             )}
             {agents.status === 'success' && agents.data.length === 0 && (
-              <p className="text-xs text-zinc-500">No agents configured yet.</p>
+              <p className="text-xs text-zinc-500">No agents configured yet. Create one from a healthy runtime below.</p>
             )}
             {agents.status === 'success' && agents.data.length > 0 && assignableAgents.length === 0 && (
               <p className="text-xs text-amber-300">
@@ -622,6 +730,7 @@ export default function IssueDetail({
                   assignment={assignment}
                   disabled={mutationPending}
                   onCancel={onCancelAssignment}
+                  onOpenRuntimeSettings={onOpenRuntimeSettings}
                 />
               ))}
             </div>
@@ -702,7 +811,7 @@ export default function IssueDetail({
                 <p className="text-xs text-amber-300">{selectedConfigAgent.assignable_reason}</p>
               )}
               {runtimes.status === 'success' && runtimes.data.length === 0 && (
-                <p className="text-xs text-zinc-500">Add or discover a runtime before this agent can become assignable.</p>
+                <p className="text-xs text-zinc-500">Discover a runtime or add its binary path before this agent can become assignable.</p>
               )}
               <button
                 type="button"

@@ -705,6 +705,119 @@ describe('App', () => {
     })
   })
 
+  it('funnels no-agent and no-runtime states through discovery and runtime-backed agent creation', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    let runtimes: RuntimeRecord[] = []
+    let agents: Agent[] = []
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([activityCreated])
+      if (path === '/api/issues/issue-alpha/assignments') return Promise.resolve({ assignments: [] })
+      if (path === '/api/runtimes/discover' && init?.method === 'POST') {
+        runtimes = [codexRuntime]
+        return Promise.resolve({ runtimes, summary: { healthy: 1, degraded: 0, missing: 3 } })
+      }
+      if (path === '/api/agents' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body))
+        agents = [{ ...agentAssignable, name: body.name, runtime_id: body.runtime_id }]
+        return Promise.resolve(agents[0])
+      }
+      if (path === '/api/agents') return Promise.resolve(agents)
+      if (path === '/api/runtimes') return Promise.resolve({ runtimes })
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Alpha issue' })).toBeVisible()
+    expect(screen.getByText('No runtimes found')).toBeVisible()
+    expect(screen.getByText('Supported CLIs: Codex CLI, Claude CLI, Gemini CLI, OpenCode CLI.')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Runtime setup docs' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Assign Agent' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find Runtimes' }))
+
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/runtimes/discover',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    expect(await screen.findByText('Create an agent from a healthy runtime')).toBeVisible()
+
+    const agentsSection = screen.getByRole('heading', { name: 'Agents' }).closest('section')
+    if (!agentsSection) throw new Error('agents section missing')
+    fireEvent.change(within(agentsSection).getByLabelText('Name'), { target: { value: 'Runtime Bound' } })
+    fireEvent.click(within(agentsSection).getByRole('button', { name: 'Create Agent' }))
+
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/agents',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining(codexRuntime.id),
+        }),
+      )
+    })
+    expect(await screen.findByRole('button', { name: 'Assign Agent' })).toBeEnabled()
+  })
+
+  it('shows assignment blockers with an action back to runtime settings', async () => {
+    const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
+    const blockedAssignment: IssueAssignment = {
+      id: 'assignment-blocked',
+      issue_id: alphaIssue.id,
+      agent_id: agentAssignable.id,
+      agent_name: agentAssignable.name,
+      runtime_id: codexRuntime.id,
+      runtime_name: codexRuntime.display_name,
+      runtime_status: 'degraded',
+      requested_by: 'local-user',
+      source_type: 'issue_detail',
+      source_id: '',
+      client_request_id: 'request-blocked',
+      status: 'queued',
+      dedupe_key: 'dedupe-blocked',
+      error_code: '',
+      error_message: '',
+      retrieval_status: 'not_started',
+      retrieval_failure_reason: '',
+      retrieval_policy: 'fail_fast',
+      retrieval_audit_metadata: '',
+      requested_at: '2026-05-02T14:30:00Z',
+      accepted_at: null,
+      completed_at: null,
+      failed_at: null,
+      cancelled_at: null,
+      created_at: '2026-05-02T14:30:00Z',
+      updated_at: '2026-05-02T14:30:00Z',
+    }
+    const fetchApi = vi.fn((path: string) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([alphaIssue])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/agents') return Promise.resolve([agentAssignable])
+      if (path === '/api/runtimes') return Promise.resolve({ runtimes: [{ ...codexRuntime, health_status: 'degraded' }] })
+      if (path === '/api/issues/issue-alpha') return Promise.resolve(alphaIssue)
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([activityCreated])
+      if (path === '/api/issues/issue-alpha/assignments') return Promise.resolve({ assignments: [blockedAssignment] })
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByText('Runtime needs attention before this can run. Open runtime settings or assign a healthy agent.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Runtime Setup' }))
+    expect(await screen.findByRole('heading', { name: 'Agent Runtimes' })).toBeVisible()
+  })
+
   it('manages runtime discovery, path overrides, revalidation, and diagnostics from settings', async () => {
     let runtimes = [codexRuntime]
     const fetchApi = vi.fn((path: string, init?: RequestInit) => {

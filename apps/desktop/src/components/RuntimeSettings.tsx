@@ -21,6 +21,7 @@ const kindLabels: Record<RuntimeKind, string> = {
   gemini: 'Gemini CLI',
   opencode: 'OpenCode CLI',
 }
+const supportedRuntimeLabels = runtimeOrder.map((kind) => kindLabels[kind])
 
 const inputStyle =
   'w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-600'
@@ -217,7 +218,33 @@ export default function RuntimeSettings({
 
         {runtimes.status === 'success' && sortedRuntimes.length === 0 && (
           <div className="rounded border border-zinc-800 bg-zinc-900/40 px-4 py-5">
-            <p className="text-sm text-zinc-500">No runtimes discovered</p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-zinc-200">No runtimes discovered</p>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Supported CLIs: {supportedRuntimeLabels.join(', ')}.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={mutationPending}
+                onClick={() => void onDiscover()}
+                className={buttonStyle}
+              >
+                Find Runtimes
+              </button>
+            </div>
+            <div className="mt-4 border-t border-zinc-800 pt-3">
+              <p className="text-xs text-zinc-500">
+                Install a supported CLI, then discover again or enter its binary path after discovery creates the runtime row.
+              </p>
+              <a
+                href="https://github.com/bzqzheng/zin/blob/main/docs/architecture.md#agent-runtime-adapters"
+                className="mt-2 inline-block text-xs font-medium text-zinc-200 hover:text-white"
+              >
+                Runtime setup docs
+              </a>
+            </div>
           </div>
         )}
 

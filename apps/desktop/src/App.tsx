@@ -1129,6 +1129,8 @@ export default function App() {
             onCancelAssignment={cancelAssignment}
             onCreateAgent={createAgent}
             onUpdateAgent={updateAgent}
+            onDiscoverRuntimes={discoverRuntimes}
+            onOpenRuntimeSettings={openRuntimeSettings}
           />
           <Timeline
             activity={visibleActivity}
