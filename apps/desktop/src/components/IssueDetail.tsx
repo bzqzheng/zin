@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { ResourceState } from '../App'
 import type { Agent, Issue, IssueAssignment, IssueComment, Runtime, Tag } from '../daemon'
 
@@ -74,6 +74,166 @@ function displayLabel(value: string) {
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ')
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const tokens: ReactNode[] = []
+  let remaining = text
+  let index = 0
+
+  while (remaining.length > 0) {
+    const codeStart = remaining.indexOf('`')
+    const boldStart = remaining.indexOf('**')
+    const starts = [codeStart, boldStart].filter((start) => start >= 0)
+    const nextStart = starts.length > 0 ? Math.min(...starts) : -1
+
+    if (nextStart < 0) {
+      tokens.push(<Fragment key={`${keyPrefix}-text-${index}`}>{remaining}</Fragment>)
+      break
+    }
+
+    if (nextStart > 0) {
+      tokens.push(<Fragment key={`${keyPrefix}-text-${index}`}>{remaining.slice(0, nextStart)}</Fragment>)
+      remaining = remaining.slice(nextStart)
+      index += 1
+      continue
+    }
+
+    if (remaining.startsWith('`')) {
+      const codeEnd = remaining.indexOf('`', 1)
+      if (codeEnd > 0) {
+        tokens.push(
+          <code key={`${keyPrefix}-code-${index}`} className="rounded bg-zinc-900 px-1 py-0.5 text-[0.9em] text-zinc-100">
+            {remaining.slice(1, codeEnd)}
+          </code>,
+        )
+        remaining = remaining.slice(codeEnd + 1)
+        index += 1
+        continue
+      }
+    }
+
+    if (remaining.startsWith('**')) {
+      const boldEnd = remaining.indexOf('**', 2)
+      if (boldEnd > 1) {
+        tokens.push(
+          <strong key={`${keyPrefix}-strong-${index}`} className="font-semibold text-zinc-100">
+            {remaining.slice(2, boldEnd)}
+          </strong>,
+        )
+        remaining = remaining.slice(boldEnd + 2)
+        index += 1
+        continue
+      }
+    }
+
+    tokens.push(<Fragment key={`${keyPrefix}-literal-${index}`}>{remaining[0]}</Fragment>)
+    remaining = remaining.slice(1)
+    index += 1
+  }
+
+  return tokens
+}
+
+function MarkdownDocument({ source }: { source: string }) {
+  const lines = source.replace(/\r\n/g, '\n').split('\n')
+  const blocks: ReactNode[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const trimmed = line.trim()
+
+    if (trimmed === '') {
+      index += 1
+      continue
+    }
+
+    if (trimmed.startsWith('```')) {
+      const codeLines: string[] = []
+      index += 1
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index])
+        index += 1
+      }
+      if (index < lines.length) index += 1
+      blocks.push(
+        <pre key={`code-${index}`} className="overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-sm leading-6 text-zinc-300">
+          <code>{codeLines.join('\n')}</code>
+        </pre>,
+      )
+      continue
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed)
+    if (heading) {
+      const HeadingTag = `h${Math.min(heading[1].length + 2, 5)}` as 'h3' | 'h4' | 'h5'
+      blocks.push(
+        <HeadingTag key={`heading-${index}`} className="mt-5 first:mt-0 text-base font-semibold leading-7 text-zinc-100">
+          {renderInlineMarkdown(heading[2], `heading-${index}`)}
+        </HeadingTag>,
+      )
+      index += 1
+      continue
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      const items: string[] = []
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*]\s+/, ''))
+        index += 1
+      }
+      blocks.push(
+        <ul key={`list-${index}`} className="list-disc space-y-1 pl-5 text-sm leading-7 text-zinc-300">
+          {items.map((item, itemIndex) => (
+            <li key={`list-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `list-${index}-${itemIndex}`)}</li>
+          ))}
+        </ul>,
+      )
+      continue
+    }
+
+    if (trimmed.startsWith('>')) {
+      const quotes: string[] = []
+      while (index < lines.length && lines[index].trim().startsWith('>')) {
+        quotes.push(lines[index].trim().replace(/^>\s?/, ''))
+        index += 1
+      }
+      blocks.push(
+        <blockquote key={`quote-${index}`} className="border-l-2 border-zinc-700 pl-3 text-sm leading-7 text-zinc-400">
+          {quotes.map((quote, quoteIndex) => (
+            <p key={`quote-${index}-${quoteIndex}`}>{renderInlineMarkdown(quote, `quote-${index}-${quoteIndex}`)}</p>
+          ))}
+        </blockquote>,
+      )
+      continue
+    }
+
+    const paragraph: string[] = [trimmed]
+    index += 1
+    while (
+      index < lines.length &&
+      lines[index].trim() !== '' &&
+      !lines[index].trim().startsWith('```') &&
+      !/^(#{1,3})\s+/.test(lines[index].trim()) &&
+      !/^[-*]\s+/.test(lines[index].trim()) &&
+      !lines[index].trim().startsWith('>')
+    ) {
+      paragraph.push(lines[index].trim())
+      index += 1
+    }
+    blocks.push(
+      <p key={`paragraph-${index}`} className="text-sm leading-7 text-zinc-300">
+        {renderInlineMarkdown(paragraph.join(' '), `paragraph-${index}`)}
+      </p>,
+    )
+  }
+
+  if (blocks.length === 0) {
+    return <p className="text-sm leading-7 text-zinc-500">No context yet</p>
+  }
+
+  return <div className="space-y-3">{blocks}</div>
 }
 
 function EmptyDetail() {
@@ -481,20 +641,50 @@ export default function IssueDetail({
         )}
 
         <section className="mb-8">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium text-zinc-300">Context</h3>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500">Context</span>
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={14}
+                className="min-h-72 w-full resize-y rounded border border-zinc-800 bg-zinc-950 px-4 py-3 text-base leading-7 text-zinc-100 outline-none focus:border-zinc-600"
+              />
+            </label>
+            <article
+              aria-label="Rendered context"
+              className="min-h-72 rounded border border-zinc-800 bg-zinc-950/50 px-5 py-4"
+            >
+              <MarkdownDocument source={description} />
+            </article>
+          </div>
+          <button
+            type="button"
+            disabled={mutationPending || title.trim() === ''}
+            onClick={() => {
+              void onUpdateIssue({
+                title,
+                description,
+                status,
+                priority,
+                assignee_id: assigneeId,
+              }).catch(() => undefined)
+            }}
+            className={`mt-3 ${buttonStyle}`}
+          >
+            Save Context
+          </button>
+        </section>
+
+        <section className="mb-8">
           <h3 className="mb-3 text-sm font-medium text-zinc-300">Fields</h3>
           <div className="space-y-3">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-zinc-500">Title</span>
               <input value={title} onChange={(event) => setTitle(event.target.value)} className={inputStyle} />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-zinc-500">Description</span>
-              <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                rows={5}
-                className={inputStyle}
-              />
             </label>
             <div className="grid grid-cols-3 gap-3">
               <label className="block">

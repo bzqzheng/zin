@@ -351,6 +351,62 @@ func TestAssignmentCreateReplayListAndCancel(t *testing.T) {
 	}
 }
 
+func TestDetailSurfacePreservesDescriptionCommentsAndAssignmentLinkage(t *testing.T) {
+	router, projectRepo, _, cleanup := setupRouter(t)
+	defer cleanup()
+	t.Setenv("PATH", t.TempDir())
+
+	project, err := projectRepo.Create("Detail surface", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	description := "# Seed documentation\n\nKeep **markdown** as plain stored context.\n- Preserve assignment linkage"
+	issue := postIssue(t, router, project.ID, map[string]string{
+		"title":       "Editor ramp",
+		"description": description,
+		"status":      "todo",
+		"priority":    "medium",
+	})
+	comment := requestJSON[map[string]interface{}](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/comments", `{"body":"Comment source stays queryable."}`, http.StatusCreated)
+	commentID, _ := comment["id"].(string)
+	if commentID == "" {
+		t.Fatalf("expected created comment id: %#v", comment)
+	}
+
+	codex := writeHandlerExecutable(t, "codex", "#!/bin/sh\necho 'codex 1.2.3'\n")
+	runtimes := requestJSON[struct {
+		Runtimes []store.Runtime `json:"runtimes"`
+	}](t, router, http.MethodPost, "/api/runtimes/discover", `{"path_overrides":{"codex":`+mustJSONQuote(t, codex)+`}}`, http.StatusOK)
+	runtime := runtimeByKind(t, runtimes.Runtimes, "codex")
+	agent := requestJSON[store.Agent](t, router, http.MethodPost, "/api/agents", `{"name":"Trinity","role":"builder","runtime_id":"`+runtime.ID+`"}`, http.StatusCreated)
+
+	type assignmentPayload struct {
+		Assignment store.IssueAssignment `json:"assignment"`
+	}
+	created := requestJSON[assignmentPayload](t, router, http.MethodPost, "/api/issues/"+issue.ID+"/assignments", `{"agent_id":"`+agent.ID+`","source_type":"comment","source_id":"`+commentID+`","client_request_id":"detail-surface-1"}`, http.StatusCreated)
+	if created.Assignment.SourceType != "comment" || created.Assignment.SourceID != commentID {
+		t.Fatalf("expected comment-linked assignment, got %#v", created.Assignment)
+	}
+
+	gotIssue := requestJSON[store.Issue](t, router, http.MethodGet, "/api/issues/"+issue.ID, ``, http.StatusOK)
+	if gotIssue.Description != description {
+		t.Fatalf("expected exact description preservation, got %q", gotIssue.Description)
+	}
+	comments := requestJSON[[]map[string]interface{}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/comments", ``, http.StatusOK)
+	if len(comments) != 1 || comments[0]["id"] != commentID || comments[0]["body"] != "Comment source stays queryable." {
+		t.Fatalf("expected comment to remain queryable, got %#v", comments)
+	}
+	assignments := requestJSON[struct {
+		Assignments []store.IssueAssignment `json:"assignments"`
+	}](t, router, http.MethodGet, "/api/issues/"+issue.ID+"/assignments", ``, http.StatusOK)
+	if len(assignments.Assignments) != 1 ||
+		assignments.Assignments[0].IssueID != issue.ID ||
+		assignments.Assignments[0].SourceType != "comment" ||
+		assignments.Assignments[0].SourceID != commentID {
+		t.Fatalf("expected original assignment linkage to remain queryable, got %#v", assignments.Assignments)
+	}
+}
+
 func TestAssignmentExecutionAPIUsesCASAndPersistsResult(t *testing.T) {
 	router, projectRepo, _, cleanup := setupRouter(t)
 	defer cleanup()

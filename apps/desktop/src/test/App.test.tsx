@@ -205,6 +205,55 @@ describe('App', () => {
     })
   })
 
+  it('renders issue context as basic markdown while saving the original description string', async () => {
+    let issueState = makeIssue({
+      id: 'issue-alpha',
+      title: 'Alpha issue',
+      description: '# Deployment notes\n\nKeep **seed docs** readable.\n- Preserve comments\n\n`issue.description` stays string.',
+    })
+    const fetchApi = vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/projects') return Promise.resolve([projectAlpha])
+      if (path === '/api/projects/project-alpha/issues') return Promise.resolve([issueState])
+      if (path === '/api/projects/project-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha') {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body))
+          issueState = { ...issueState, ...body, updated_at: '2026-05-02T16:00:00Z' }
+          return Promise.resolve(issueState)
+        }
+        return Promise.resolve(issueState)
+      }
+      if (path === '/api/issues/issue-alpha/tags') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/comments') return Promise.resolve([])
+      if (path === '/api/issues/issue-alpha/activity') return Promise.resolve([])
+      const interactions = interactionResponse(path)
+      if (interactions) return Promise.resolve(interactions)
+      throw new Error(`unexpected path: ${path}`)
+    })
+
+    renderApp(fetchApi)
+
+    expect(await screen.findByRole('heading', { name: 'Deployment notes' })).toBeVisible()
+    expect(screen.getByText('seed docs')).toBeVisible()
+    expect(screen.getByText('Preserve comments')).toBeVisible()
+    expect(screen.getByText('issue.description')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Context'), {
+      target: { value: '# Updated notes\n\nPlain text remains the stored source.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Context' }))
+
+    await waitFor(() => {
+      expect(fetchApi).toHaveBeenCalledWith(
+        '/api/issues/issue-alpha',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('"description":"# Updated notes\\n\\nPlain text remains the stored source."'),
+        }),
+      )
+    })
+  })
+
   it('keeps the current issue list stable when the selected project is clicked again', async () => {
     const alphaIssue = makeIssue({ id: 'issue-alpha', title: 'Alpha issue' })
     const fetchApi = vi.fn((path: string) => {
